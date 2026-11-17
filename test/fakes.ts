@@ -1,5 +1,7 @@
 import { v7 } from 'uuid';
-import type { Repos } from '../src/app.js';
+import { buildApp, type Repos } from '../src/app.js';
+import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
+import type { PasswordHasher } from '../src/shared/passwords.js';
 import type { DeviceRecord, DevicesRepo, NewDevice, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
@@ -61,11 +63,65 @@ export class FakeSyncRepo implements SyncRepo {
   }
 }
 
+export class FakeAuthRepo implements AuthRepo {
+  users: UserRecord[] = [];
+  tenants: TenantRecord[] = [];
+  branches: (BranchRecord & { tenantId: string })[] = [];
+  tokens: (RefreshTokenRecord & { tokenHash: string })[] = [];
+
+  async findUserByEmail(email: string) {
+    return this.users.find((u) => u.email === email) ?? null;
+  }
+  async findUserById(id: string) {
+    return this.users.find((u) => u.id === id) ?? null;
+  }
+  async createAccount({ tenant, branch, user }: NewAccount) {
+    if (this.users.some((u) => u.email === user.email)) return false;
+    this.tenants.push(tenant);
+    this.branches.push({ ...branch, tenantId: tenant.id });
+    this.users.push(user);
+    return true;
+  }
+  async getTenant(id: string) {
+    return this.tenants.find((t) => t.id === id) ?? null;
+  }
+  async listBranches(tenantId: string) {
+    return this.branches.filter((b) => b.tenantId === tenantId).map(({ id, name, type }) => ({ id, name, type }));
+  }
+  async saveRefreshToken(t: { id: string; userId: string; tokenHash: string; expiresAt: Date }) {
+    this.tokens.push({ ...t, revokedAt: null });
+  }
+  async findRefreshToken(tokenHash: string) {
+    return this.tokens.find((t) => t.tokenHash === tokenHash) ?? null;
+  }
+  async revokeRefreshToken(id: string) {
+    const t = this.tokens.find((x) => x.id === id && !x.revokedAt);
+    if (t) t.revokedAt = new Date();
+    return !!t;
+  }
+  async revokeAllRefreshTokens(userId: string) {
+    for (const t of this.tokens) if (t.userId === userId && !t.revokedAt) t.revokedAt = new Date();
+  }
+}
+
 export function fakeRepos() {
   const devices = new FakeDevicesRepo();
   const sync = new FakeSyncRepo(devices);
-  const repos: Repos = { health: { ping: async () => {} }, devices, sync };
-  return { repos, devices, sync };
+  const auth = new FakeAuthRepo();
+  const repos: Repos = { health: { ping: async () => {} }, auth, devices, sync };
+  return { repos, devices, sync, auth };
+}
+
+/** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */
+export const fastHasher: PasswordHasher = {
+  hash: async (p) => `fake$${p}`,
+  verify: async (h, p) => h === `fake$${p}`,
+};
+
+export const testAuthConfig = { jwtSecret: 'test-secret-test-secret-test-secret-123', accessTtlMinutes: 15, refreshTtlDays: 30 };
+
+export function buildTestApp(repos: Repos, opts: { passwordHasher?: PasswordHasher } = {}) {
+  return buildApp({ repos, auth: testAuthConfig, logLevel: 'silent', passwordHasher: opts.passwordHasher ?? fastHasher });
 }
 
 /** A valid Ed25519 public key shape (43 base64url chars). */

@@ -38,6 +38,51 @@ export const branches = pgTable('branches', {
   updatedAt: updatedAt(),
 });
 
+// ── Owner accounts ──────────────────────────────────────────────
+
+export const ownerRoles = ['owner', 'manager'] as const;
+export type OwnerRole = (typeof ownerRoles)[number];
+
+/** People who log in to the owner app (email + password). */
+export const ownerUsers = pgTable(
+  'owner_users',
+  {
+    id: uuid('id').primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    /** Always stored lowercase. */
+    email: text('email').notNull().unique(),
+    /** argon2id hash — never the password itself. */
+    passwordHash: text('password_hash').notNull(),
+    name: text('name').notNull(),
+    role: text('role', { enum: ownerRoles }).notNull().default('owner'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('owner_users_tenant_idx').on(t.tenantId)],
+);
+
+/**
+ * Long-lived login sessions. Each refresh gives a NEW token and revokes the old one
+ * (rotation). Using a revoked token again = stolen → all sessions of the user are revoked.
+ */
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => ownerUsers.id),
+    /** sha256 of the token. */
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('refresh_tokens_user_idx').on(t.userId)],
+);
+
 // ── Devices ─────────────────────────────────────────────────────
 
 export const deviceRoles = ['hub', 'pos', 'kds'] as const;

@@ -10,6 +10,10 @@ const EnvSchema = Type.Object({
   PORT: Type.Integer({ default: 3000 }),
   LOG_LEVEL: Type.String({ default: 'info' }),
   DATABASE_URL: Type.String({ minLength: 1 }),
+  /** Secret used to sign owner login tokens. Long and random; never commit the real one. */
+  JWT_SECRET: Type.String({ minLength: 32 }),
+  ACCESS_TOKEN_TTL_MINUTES: Type.Integer({ default: 15, minimum: 1 }),
+  REFRESH_TOKEN_TTL_DAYS: Type.Integer({ default: 30, minimum: 1 }),
 });
 
 export type Env = Static<typeof EnvSchema>;

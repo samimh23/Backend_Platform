@@ -34,12 +34,23 @@ pnpm test
 |---|---|---|---|
 | GET | `/health` | – | Process alive |
 | GET | `/health/ready` | – | Database reachable (503 `DATABASE_DOWN` if not) |
+| POST | `/v1/auth/signup` | – | Owner account + business + first branch → tokens |
+| POST | `/v1/auth/login` | – | Email + password → tokens (rate limited 10/min/IP) |
+| POST | `/v1/auth/refresh` | refresh token | New tokens (rotation; reusing an old one closes all sessions) |
+| POST | `/v1/auth/logout` | refresh token | Close this session |
+| GET | `/v1/auth/me` | owner | User, business, branches |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
 | GET | `/v1/sync/pull?cursor=` | device | Menu (categories, products) changed since cursor |
 
 Device auth header: `Authorization: Device <token>`.
+Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew with `/v1/auth/refresh`).
+
+### Owner auth
+- Passwords: argon2id, min 10 characters. Emails stored lowercase.
+- Access token: JWT (HS256, `JWT_SECRET`), 15 min. Refresh token: random, 30 days, only its hash is stored.
+- Wrong password and unknown email return the same `INVALID_CREDENTIALS` (no account guessing).
 
 ### Pairing flow
 1. Owner app creates a one-time code (for now: `pnpm db:seed`).

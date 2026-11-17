@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { v7 } from 'uuid';
-import { buildApp } from '../src/app.js';
+import type { buildApp } from '../src/app.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 import { findSeqGaps } from '../src/modules/sync/sync.service.js';
-import { branchId, fakeRepos, publicKey, type FakeSyncRepo } from './fakes.js';
+import { branchId, buildTestApp, fakeRepos, publicKey, type FakeSyncRepo } from './fakes.js';
 
 describe('sync API', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -14,7 +14,7 @@ describe('sync API', () => {
     const f = fakeRepos();
     sync = f.sync;
     f.devices.codes.set('ABCD-EFGH', { role: 'hub', used: false });
-    app = await buildApp({ repos: f.repos, logLevel: 'silent' });
+    app = await buildTestApp(f.repos);
     device = (
       await app.inject({
         method: 'POST',

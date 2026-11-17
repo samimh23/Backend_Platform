@@ -20,9 +20,12 @@
     "db:seed": "tsx --env-file=.env src/db/seed.ts"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.2.2",
     "@fastify/type-provider-typebox": "^5.2.0",
+    "@node-rs/argon2": "^2.2.2",
     "@sinclair/typebox": "^0.34.52",
     "drizzle-orm": "^0.44.7",
+    "fast-jwt": "^6.3.7",
     "fastify": "^5",
     "postgres": "^3.4.9",
     "uuid": "^11.1.1"

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildApp } from '../src/app.js';
+import type { buildApp } from '../src/app.js';
 import { normalizePairingCode } from '../src/modules/devices/devices.service.js';
-import { fakeRepos, publicKey, type FakeDevicesRepo } from './fakes.js';
+import { buildTestApp, fakeRepos, publicKey, type FakeDevicesRepo } from './fakes.js';
 
 describe('device pairing', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -13,7 +13,7 @@ describe('device pairing', () => {
     devices.codes.set('ABCD-EFGH', { role: 'hub', used: false });
     devices.codes.set('POS2-CODE', { role: 'pos', used: false });
     devices.codes.set('OLD1-CODE', { role: 'pos', used: false, expired: true });
-    app = await buildApp({ repos: f.repos, logLevel: 'silent' });
+    app = await buildTestApp(f.repos);
   });
   afterEach(() => app.close());
 

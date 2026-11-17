@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { loadEnv } from '../src/config/env.js';
 
+const base = { DATABASE_URL: 'postgres://x', JWT_SECRET: 'x'.repeat(32) };
+
 describe('loadEnv', () => {
   it('applies defaults and converts types', () => {
-    const env = loadEnv({ DATABASE_URL: 'postgres://x', PORT: '4000' });
+    const env = loadEnv({ ...base, PORT: '4000' });
     expect(env.PORT).toBe(4000);
     expect(env.NODE_ENV).toBe('development');
+    expect(env.ACCESS_TOKEN_TTL_MINUTES).toBe(15);
+    expect(env.REFRESH_TOKEN_TTL_DAYS).toBe(30);
   });
 
   it('refuses to start without DATABASE_URL', () => {
-    expect(() => loadEnv({})).toThrow(/DATABASE_URL/);
+    expect(() => loadEnv({ JWT_SECRET: base.JWT_SECRET })).toThrow(/DATABASE_URL/);
+  });
+
+  it('refuses a missing or too short JWT_SECRET', () => {
+    expect(() => loadEnv({ DATABASE_URL: base.DATABASE_URL })).toThrow(/JWT_SECRET/);
+    expect(() => loadEnv({ ...base, JWT_SECRET: 'short' })).toThrow(/JWT_SECRET/);
   });
 });
