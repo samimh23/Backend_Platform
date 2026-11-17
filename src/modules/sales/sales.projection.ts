@@ -1,0 +1,140 @@
+import type { SyncEvent } from '../sync/sync.schema.js';
+
+/**
+ * Turns POS events into simple operations on the sales tables.
+ * PURE: no database here — the sync repo executes the operations in the same
+ * transaction that stores the events, so events and sales never disagree.
+ */
+export type ProjectionOp =
+  | { kind: 'openOrder'; orderId: string; type: string; openedAt: Date }
+  | {
+      kind: 'addLine';
+      orderId: string;
+      line: {
+        id: string;
+        productId: string;
+        name: string;
+        unitPrice: number;
+        modifiersPrice: number;
+        modifiers: unknown[];
+        qty: number;
+        vatRateBp: number;
+      };
+    }
+  | { kind: 'setLineQty'; lineId: string; qty: number }
+  | { kind: 'voidLine'; lineId: string }
+  | {
+      kind: 'payment';
+      orderId: string;
+      payment: { id: string; method: string; amount: number; tendered: number; changeGiven: number; createdAt: Date };
+    }
+  | { kind: 'closeOrder'; orderId: string; closedAt: Date; total: number; itemCount: number; receiptNumber: string | null }
+  | { kind: 'cancelOrder'; orderId: string; closedAt: Date };
+
+export interface ProjectionProblem {
+  eventId: string;
+  reason: string;
+}
+
+type Payload = Record<string, unknown>;
+
+class BadPayload extends Error {}
+
+const str = (p: Payload, k: string): string => {
+  const v = p[k];
+  if (typeof v !== 'string' || v.length === 0) throw new BadPayload(`payload.${k} must be a non-empty string`);
+  return v;
+};
+const int = (p: Payload, k: string, fallback?: number): number => {
+  const v = p[k] ?? fallback;
+  if (typeof v !== 'number' || !Number.isInteger(v)) throw new BadPayload(`payload.${k} must be an integer`);
+  return v;
+};
+const optStr = (p: Payload, k: string): string | null => (typeof p[k] === 'string' ? (p[k] as string) : null);
+
+/** Events must be from one device, in deviceSeq order. Unknown event types are ignored (not an error). */
+export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; problems: ProjectionProblem[] } {
+  const ops: ProjectionOp[] = [];
+  const problems: ProjectionProblem[] = [];
+
+  for (const e of events) {
+    const p = e.payload as Payload;
+    const at = new Date(e.occurredAt);
+    try {
+      switch (e.type) {
+        case 'order.opened':
+          ops.push({ kind: 'openOrder', orderId: e.entityId, type: optStr(p, 'type') ?? 'takeaway', openedAt: at });
+          break;
+
+        case 'order.item_added': {
+          const modifiers = Array.isArray(p.modifiers) ? p.modifiers : [];
+          const modifiersPrice = modifiers.reduce<number>(
+            (sum, m) => sum + (typeof (m as Payload)?.extraPrice === 'number' ? ((m as Payload).extraPrice as number) : 0),
+            0,
+          );
+          ops.push({
+            kind: 'addLine',
+            orderId: e.entityId,
+            line: {
+              id: str(p, 'lineId'),
+              productId: str(p, 'productId'),
+              name: str(p, 'name'),
+              unitPrice: int(p, 'unitPrice'),
+              modifiersPrice,
+              modifiers,
+              qty: int(p, 'qty'),
+              vatRateBp: int(p, 'vatRateBp'),
+            },
+          });
+          break;
+        }
+
+        case 'order.item_updated':
+          ops.push({ kind: 'setLineQty', lineId: str(p, 'lineId'), qty: int(p, 'qty') });
+          break;
+
+        case 'order.item_voided':
+          ops.push({ kind: 'voidLine', lineId: str(p, 'lineId') });
+          break;
+
+        case 'payment.added':
+          ops.push({
+            kind: 'payment',
+            orderId: e.entityId,
+            payment: {
+              id: str(p, 'paymentId'),
+              method: str(p, 'method'),
+              amount: int(p, 'amount'),
+              tendered: int(p, 'tendered', 0),
+              changeGiven: int(p, 'change', 0),
+              createdAt: at,
+            },
+          });
+          break;
+
+        case 'order.closed':
+          ops.push({
+            kind: 'closeOrder',
+            orderId: e.entityId,
+            closedAt: at,
+            total: int(p, 'total'),
+            itemCount: int(p, 'itemCount', 0),
+            receiptNumber: optStr(p, 'receiptNumber'),
+          });
+          break;
+
+        case 'order.cancelled':
+          ops.push({ kind: 'cancelOrder', orderId: e.entityId, closedAt: at });
+          break;
+
+        default:
+          // e.g. debug.test, staff.logged_in — stored as events, no sales effect.
+          break;
+      }
+    } catch (err) {
+      if (!(err instanceof BadPayload)) throw err;
+      problems.push({ eventId: e.id, reason: `${e.type}: ${err.message}` });
+    }
+  }
+  return { ops, problems };
+}

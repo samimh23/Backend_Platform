@@ -15,6 +15,9 @@ import { DevicesService, type DeviceContext } from './modules/devices/devices.se
 import { DrizzleHealthRepo } from './modules/health/health.repo.js';
 import { healthRoutes } from './modules/health/health.routes.js';
 import { HealthService, type HealthRepo } from './modules/health/health.service.js';
+import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
+import { salesRoutes } from './modules/sales/sales.routes.js';
+import { SalesService } from './modules/sales/sales.service.js';
 import { DrizzleSyncRepo, type SyncRepo } from './modules/sync/sync.repo.js';
 import { syncRoutes } from './modules/sync/sync.routes.js';
 import { SyncService } from './modules/sync/sync.service.js';
@@ -28,6 +31,7 @@ export interface Services {
   auth: AuthService;
   catalog: CatalogService;
   devices: DevicesService;
+  sales: SalesService;
   sync: SyncService;
 }
 
@@ -51,6 +55,7 @@ export interface Repos {
   auth: AuthRepo;
   catalog: CatalogRepo;
   devices: DevicesRepo;
+  sales: SalesRepo;
   sync: SyncRepo;
 }
 
@@ -60,6 +65,7 @@ export function reposFromDb(db: Db): Repos {
     auth: new DrizzleAuthRepo(db),
     catalog: new DrizzleCatalogRepo(db),
     devices: new DrizzleDevicesRepo(db),
+    sales: new DrizzleSalesRepo(db),
     sync: new DrizzleSyncRepo(db),
   };
 }
@@ -88,6 +94,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     auth: new AuthService(repos.auth, passwordHasher ?? new Argon2Hasher(), tokens, auth.refreshTtlDays),
     catalog: new CatalogService(repos.catalog),
     devices: new DevicesService(repos.devices),
+    sales: new SalesService(repos.sales),
     sync: new SyncService(repos.sync),
   };
   app.decorate('services', services);
@@ -118,6 +125,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(devicesRoutes);
   await app.register(ownerDevicesRoutes);
   await app.register(catalogRoutes);
+  await app.register(salesRoutes);
   await app.register(syncRoutes);
 
   return app;

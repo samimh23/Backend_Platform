@@ -3,6 +3,8 @@ import type { Db } from '../../db/client.js';
 import { categories, devices, events, products, syncErrors } from '../../db/schema.js';
 import { newId } from '../../shared/ids.js';
 import type { DeviceContext } from '../devices/devices.service.js';
+import { applyProjection } from '../sales/sales.apply.js';
+import { projectEvents } from '../sales/sales.projection.js';
 import type { PullResult, SyncEvent } from './sync.schema.js';
 
 export interface SyncErrorRecord {
@@ -12,7 +14,10 @@ export interface SyncErrorRecord {
 }
 
 export interface SyncRepo {
-  /** Inserts events, ignoring ids already stored. Returns the ids actually inserted. */
+  /**
+   * Inserts events (ids already stored are ignored) AND updates the sales tables
+   * from the new ones, in one transaction. Returns the ids actually inserted.
+   */
   insertEvents(ctx: DeviceContext, events: SyncEvent[]): Promise<string[]>;
   recordErrors(deviceId: string, errors: SyncErrorRecord[]): Promise<void>;
   /** Updates last seen time and the highest sequence received. */
@@ -25,27 +30,40 @@ export class DrizzleSyncRepo implements SyncRepo {
 
   async insertEvents(ctx: DeviceContext, list: SyncEvent[]): Promise<string[]> {
     if (list.length === 0) return [];
-    const rows = await this.db
-      .insert(events)
-      .values(
-        list.map((e) => ({
-          id: e.id,
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          deviceId: ctx.deviceId,
-          staffId: e.staffId ?? null,
-          type: e.type,
-          version: e.version,
-          entityId: e.entityId,
-          deviceSeq: e.deviceSeq,
-          occurredAt: new Date(e.occurredAt),
-          approvedBy: e.approvedBy ?? null,
-          payload: e.payload,
-        })),
-      )
-      .onConflictDoNothing({ target: events.id })
-      .returning({ id: events.id });
-    return rows.map((r) => r.id);
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(events)
+        .values(
+          list.map((e) => ({
+            id: e.id,
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            deviceId: ctx.deviceId,
+            staffId: e.staffId ?? null,
+            type: e.type,
+            version: e.version,
+            entityId: e.entityId,
+            deviceSeq: e.deviceSeq,
+            occurredAt: new Date(e.occurredAt),
+            approvedBy: e.approvedBy ?? null,
+            payload: e.payload,
+          })),
+        )
+        .onConflictDoNothing({ target: events.id })
+        .returning({ id: events.id });
+      const inserted = new Set(rows.map((r) => r.id));
+
+      // Only NEW events change the sales tables (a retried batch changes nothing).
+      const fresh = list.filter((e) => inserted.has(e.id)).sort((a, b) => a.deviceSeq - b.deviceSeq);
+      const { ops, problems } = projectEvents(fresh);
+      await applyProjection(tx, ctx, ops);
+      if (problems.length > 0) {
+        await tx.insert(syncErrors).values(
+          problems.map((p) => ({ id: newId(), deviceId: ctx.deviceId, eventId: p.eventId, code: 'PROJECTION_SKIPPED', details: { reason: p.reason } })),
+        );
+      }
+      return [...inserted];
+    });
   }
 
   async recordErrors(deviceId: string, errors: SyncErrorRecord[]): Promise<void> {

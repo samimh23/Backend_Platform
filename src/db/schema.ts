@@ -210,3 +210,67 @@ export const syncErrors = pgTable('sync_errors', {
   details: jsonb('details'),
   createdAt: createdAt(),
 });
+
+// ── Sales (projections: read tables BUILT FROM the events) ──────
+//
+// The events table is the source of truth. These tables are derived from it
+// during sync so the owner app can read sales quickly. They can always be
+// rebuilt by replaying the events.
+
+export const salesOrders = pgTable(
+  'sales_orders',
+  {
+    /** Same id as the order on the POS (event entityId). */
+    id: uuid('id').primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    deviceId: uuid('device_id').notNull(),
+    /** open | paid | cancelled */
+    status: text('status', { enum: ['open', 'paid', 'cancelled'] }).notNull().default('open'),
+    type: text('type').notNull().default('takeaway'),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    /** TTC in millimes, set when paid. */
+    total: money('total').notNull().default(0),
+    itemCount: integer('item_count').notNull().default(0),
+    receiptNumber: text('receipt_number'),
+    /** cash | card | mixed */
+    paymentMethod: text('payment_method'),
+  },
+  (t) => [
+    index('sales_orders_branch_closed_idx').on(t.branchId, t.closedAt),
+    index('sales_orders_branch_status_idx').on(t.branchId, t.status),
+  ],
+);
+
+export const salesOrderLines = pgTable(
+  'sales_order_lines',
+  {
+    id: uuid('id').primaryKey(),
+    orderId: uuid('order_id').notNull(),
+    productId: text('product_id').notNull(),
+    /** Snapshot at sale time. */
+    name: text('name').notNull(),
+    unitPrice: money('unit_price').notNull(),
+    modifiersPrice: money('modifiers_price').notNull().default(0),
+    modifiers: jsonb('modifiers').notNull().default(sql`'[]'::jsonb`),
+    qty: integer('qty').notNull(),
+    vatRateBp: integer('vat_rate_bp').notNull(),
+    voided: boolean('voided').notNull().default(false),
+  },
+  (t) => [index('sales_order_lines_order_idx').on(t.orderId)],
+);
+
+export const salesPayments = pgTable(
+  'sales_payments',
+  {
+    id: uuid('id').primaryKey(),
+    orderId: uuid('order_id').notNull(),
+    method: text('method').notNull(),
+    amount: money('amount').notNull(),
+    tendered: money('tendered').notNull().default(0),
+    changeGiven: money('change_given').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('sales_payments_order_idx').on(t.orderId)],
+);

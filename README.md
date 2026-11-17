@@ -48,6 +48,9 @@ pnpm test
 | PATCH / DELETE | `/v1/owner/categories/:id` | owner | Edit / delete (refused with `CATEGORY_NOT_EMPTY` while it has products) |
 | POST | `/v1/owner/branches/:branchId/products` | owner | `{ categoryId, name, price (millimes), vatRateBp?, station?, modifierGroups?, available? }` |
 | PATCH / DELETE | `/v1/owner/products/:id` | owner | Edit price, availability, options… / delete |
+| GET | `/v1/owner/branches/:branchId/sales/summary?date=` | owner | Day totals: revenue, tickets, average, by payment, by hour, top 5 products, VAT |
+| GET | `/v1/owner/branches/:branchId/sales/orders?date=&status=&limit=` | owner | Tickets of the day, newest first |
+| GET | `/v1/owner/orders/:orderId` | owner | Ticket detail: lines (incl. removed ones), payments, VAT |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
@@ -74,6 +77,14 @@ Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew wi
 - Pull cursor = server time when the query started → nothing is missed between pulls.
 - Menu deletions are soft (`deleted_at`): the next pull returns the row with `deleted: true` so the POS removes it.
 - Every menu change sets `updated_at = now()` — that's how the POS sees it.
+
+### Sales
+- The `events` table is the source of truth. `sales_orders`, `sales_order_lines`, `sales_payments`
+  are **projections** built from new events in the same transaction as the push
+  (`modules/sales/sales.projection.ts` is pure: event → operation).
+- A retried push changes nothing (only newly inserted events are projected).
+- A malformed event is stored but skipped for sales, and logged in `sync_errors` (`PROJECTION_SKIPPED`).
+- A "day" = 00:00 → 24:00 Tunisia time (UTC+1).
 
 Errors always look like:
 ```json

@@ -2,6 +2,9 @@ import { v7 } from 'uuid';
 import { buildApp, type Repos } from '../src/app.js';
 import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
 import type { PasswordHasher } from '../src/shared/passwords.js';
+import type { DeviceContext } from '../src/modules/devices/devices.service.js';
+import { projectEvents, type ProjectionOp } from '../src/modules/sales/sales.projection.js';
+import type { SalesLineRecord, SalesOrderRecord, SalesPaymentRecord, SalesRepo } from '../src/modules/sales/sales.repo.js';
 import type { CatalogRepo, CategoryRecord, ProductRecord } from '../src/modules/catalog/catalog.repo.js';
 import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
@@ -81,17 +84,22 @@ export class FakeSyncRepo implements SyncRepo {
   constructor(
     private readonly devices: FakeDevicesRepo,
     private readonly catalog: FakeCatalogRepo,
+    readonly sales: FakeSalesRepo,
   ) {}
 
-  async insertEvents(_ctx: unknown, list: SyncEvent[]) {
-    const inserted: string[] = [];
+  async insertEvents(ctx: DeviceContext, list: SyncEvent[]) {
+    const fresh: SyncEvent[] = [];
     for (const e of list) {
       if (!this.events.has(e.id)) {
         this.events.set(e.id, e);
-        inserted.push(e.id);
+        fresh.push(e);
       }
     }
-    return inserted;
+    // Same projection as the real repo, applied to the in-memory sales store.
+    const { ops, problems } = projectEvents(fresh.sort((a, b) => a.deviceSeq - b.deviceSeq));
+    this.sales.apply(ctx, ops);
+    this.errors.push(...problems.map((p) => ({ eventId: p.eventId, code: 'PROJECTION_SKIPPED', details: { reason: p.reason } })));
+    return fresh.map((e) => e.id);
   }
 
   async recordErrors(_deviceId: string, errors: SyncErrorRecord[]) {
@@ -227,13 +235,93 @@ export class FakeAuthRepo implements AuthRepo {
   }
 }
 
+/** In-memory sales tables, filled by the projection like the real ones. */
+export class FakeSalesRepo implements SalesRepo {
+  orders: (Omit<SalesOrderRecord, 'deviceCode'> & { deviceId: string })[] = [];
+  lines: SalesLineRecord[] = [];
+  payments: SalesPaymentRecord[] = [];
+
+  constructor(private readonly devices: FakeDevicesRepo) {}
+
+  apply(ctx: DeviceContext, ops: ProjectionOp[]) {
+    for (const op of ops) {
+      const order = 'orderId' in op ? this.orders.find((o) => o.id === op.orderId) : undefined;
+      switch (op.kind) {
+        case 'openOrder':
+          if (!order)
+            this.orders.push({
+              id: op.orderId,
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              deviceId: ctx.deviceId,
+              status: 'open',
+              type: op.type,
+              openedAt: op.openedAt,
+              closedAt: null,
+              total: 0,
+              itemCount: 0,
+              receiptNumber: null,
+              paymentMethod: null,
+            });
+          break;
+        case 'addLine':
+          if (!this.lines.some((l) => l.id === op.line.id)) this.lines.push({ ...op.line, orderId: op.orderId, voided: false });
+          break;
+        case 'setLineQty':
+          for (const l of this.lines) if (l.id === op.lineId) l.qty = op.qty;
+          break;
+        case 'voidLine':
+          for (const l of this.lines) if (l.id === op.lineId) l.voided = true;
+          break;
+        case 'payment':
+          this.payments.push({ ...op.payment, orderId: op.orderId });
+          if (order) order.paymentMethod = !order.paymentMethod || order.paymentMethod === op.payment.method ? op.payment.method : 'mixed';
+          break;
+        case 'closeOrder':
+          if (order) Object.assign(order, { status: 'paid', closedAt: op.closedAt, total: op.total, itemCount: op.itemCount, receiptNumber: op.receiptNumber });
+          break;
+        case 'cancelOrder':
+          if (order) Object.assign(order, { status: 'cancelled', closedAt: op.closedAt });
+          break;
+      }
+    }
+  }
+
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+
+  private details(orders: FakeSalesRepo['orders']) {
+    const ids = new Set(orders.map((o) => o.id));
+    return {
+      orders: orders.map(({ deviceId, ...o }) => ({ ...o, deviceCode: this.devices.devices.find((d) => d.id === deviceId)?.code ?? null })),
+      lines: this.lines.filter((l) => ids.has(l.orderId)),
+      payments: this.payments.filter((p) => ids.has(p.orderId)),
+    };
+  }
+
+  async ordersInRange(b: string, from: Date, to: Date) {
+    const inRange = (d: Date | null) => d !== null && d >= from && d < to;
+    return this.details(
+      this.orders
+        .filter((o) => o.branchId === b && (inRange(o.closedAt) || (o.status === 'open' && inRange(o.openedAt))))
+        .sort((a, b2) => b2.openedAt.getTime() - a.openedAt.getTime() || (b2.id > a.id ? 1 : -1)),
+    );
+  }
+
+  async findOrder(id: string) {
+    return this.details(this.orders.filter((o) => o.id === id));
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
   const catalog = new FakeCatalogRepo(devices);
-  const sync = new FakeSyncRepo(devices, catalog);
-  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sync };
-  return { repos, devices, sync, auth, catalog };
+  const sales = new FakeSalesRepo(devices);
+  const sync = new FakeSyncRepo(devices, catalog, sales);
+  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sales, sync };
+  return { repos, devices, sync, auth, catalog, sales };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */
