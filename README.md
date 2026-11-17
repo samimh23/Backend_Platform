@@ -26,13 +26,32 @@ pnpm test
 | `pnpm db:generate` | Create a migration after changing `src/db/schema.ts` |
 | `pnpm db:migrate` | Apply migrations |
 | `pnpm db:studio` | Browse the database in the browser |
+| `pnpm db:seed` | Demo café + menu + Hub/POS pairing codes |
 
 ## Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Process alive |
-| GET | `/health/ready` | Database reachable (503 `DATABASE_DOWN` if not) |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | – | Process alive |
+| GET | `/health/ready` | – | Database reachable (503 `DATABASE_DOWN` if not) |
+| POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
+| GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
+| POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
+| GET | `/v1/sync/pull?cursor=` | device | Menu (categories, products) changed since cursor |
+
+Device auth header: `Authorization: Device <token>`.
+
+### Pairing flow
+1. Owner app creates a one-time code (for now: `pnpm db:seed`).
+2. The POS sends the code + a name + its Ed25519 public key to `/v1/devices/pair`.
+3. The server returns a token (shown once, only its hash is stored) and a device code `T1`, `T2`…
+4. The POS keeps the token in secure storage and uses it for every sync call.
+
+### Sync rules
+- Events are append-only; `id` (UUID v7 from the device) makes retries safe.
+- `deviceSeq` increases per device; missing numbers are logged in `sync_errors` (`SEQ_GAP`).
+- Events claiming another device/branch are rejected (`WRONG_DEVICE_OR_BRANCH`).
+- Pull cursor = server time when the query started → nothing is missed between pulls.
 
 Errors always look like:
 ```json
