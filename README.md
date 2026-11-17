@@ -43,6 +43,11 @@ pnpm test
 | GET | `/v1/owner/branches/:branchId/pairing-codes` | owner | Unused, not expired codes |
 | GET | `/v1/owner/branches/:branchId/devices` | owner | Devices with `online` (synced < 60 s), last seen, events received |
 | PATCH | `/v1/owner/devices/:deviceId` | owner (role owner) | Rename, disable (POS locked on next sync) or re-enable |
+| GET | `/v1/owner/branches/:branchId/menu` | owner | Categories + products (not deleted) |
+| POST | `/v1/owner/branches/:branchId/categories` | owner | `{ name, color?, sortOrder? }` |
+| PATCH / DELETE | `/v1/owner/categories/:id` | owner | Edit / delete (refused with `CATEGORY_NOT_EMPTY` while it has products) |
+| POST | `/v1/owner/branches/:branchId/products` | owner | `{ categoryId, name, price (millimes), vatRateBp?, station?, modifierGroups?, available? }` |
+| PATCH / DELETE | `/v1/owner/products/:id` | owner | Edit price, availability, options… / delete |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
@@ -67,6 +72,8 @@ Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew wi
 - `deviceSeq` increases per device; missing numbers are logged in `sync_errors` (`SEQ_GAP`).
 - Events claiming another device/branch are rejected (`WRONG_DEVICE_OR_BRANCH`).
 - Pull cursor = server time when the query started → nothing is missed between pulls.
+- Menu deletions are soft (`deleted_at`): the next pull returns the row with `deleted: true` so the POS removes it.
+- Every menu change sets `updated_at = now()` — that's how the POS sees it.
 
 Errors always look like:
 ```json

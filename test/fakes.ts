@@ -2,6 +2,7 @@ import { v7 } from 'uuid';
 import { buildApp, type Repos } from '../src/app.js';
 import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
 import type { PasswordHasher } from '../src/shared/passwords.js';
+import type { CatalogRepo, CategoryRecord, ProductRecord } from '../src/modules/catalog/catalog.repo.js';
 import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
@@ -77,7 +78,10 @@ export class FakeSyncRepo implements SyncRepo {
   events = new Map<string, SyncEvent>();
   errors: SyncErrorRecord[] = [];
 
-  constructor(private readonly devices: FakeDevicesRepo) {}
+  constructor(
+    private readonly devices: FakeDevicesRepo,
+    private readonly catalog: FakeCatalogRepo,
+  ) {}
 
   async insertEvents(_ctx: unknown, list: SyncEvent[]) {
     const inserted: string[] = [];
@@ -102,11 +106,83 @@ export class FakeSyncRepo implements SyncRepo {
     }
   }
 
-  async catalogSince(_branchId: string, since: Date | null) {
+  /** Reads the fake catalog, like the real repo: live rows first, then changes incl. deletions. */
+  async catalogSince(b: string, since: Date | null) {
+    const pick = <T extends { branchId: string; updatedAt: Date; deletedAt: Date | null }>(rows: T[]) =>
+      rows.filter((r) => r.branchId === b && (since ? r.updatedAt > since : r.deletedAt === null));
     return {
-      categories: since ? [] : [{ id: v7(), name: 'Boissons chaudes', sortOrder: 1, color: '#8B5E3C' }],
-      products: [],
+      categories: pick(this.catalog.categories).map(({ id, name, sortOrder, color, deletedAt }) => ({
+        id,
+        name,
+        sortOrder,
+        color,
+        deleted: deletedAt !== null,
+      })),
+      products: pick(this.catalog.products).map(({ branchId: _b, updatedAt: _u, deletedAt, ...p }) => ({
+        ...p,
+        deleted: deletedAt !== null,
+      })),
     };
+  }
+}
+
+type Stamped = { updatedAt: Date; deletedAt: Date | null };
+
+export class FakeCatalogRepo implements CatalogRepo {
+  categories: (CategoryRecord & Stamped)[] = [
+    // The default test branch starts with one category.
+    { id: v7(), branchId, name: 'Boissons chaudes', color: '#8B5E3C', sortOrder: 1, updatedAt: new Date(0), deletedAt: null },
+  ];
+  products: (ProductRecord & Stamped)[] = [];
+
+  constructor(private readonly devices: FakeDevicesRepo) {}
+
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  private strip<T extends Stamped>({ updatedAt: _u, deletedAt: _d, ...r }: T) {
+    return r;
+  }
+  async listCategories(b: string) {
+    return this.categories.filter((c) => c.branchId === b && !c.deletedAt).map((c) => this.strip(c));
+  }
+  async listProducts(b: string) {
+    return this.products.filter((p) => p.branchId === b && !p.deletedAt).map((p) => this.strip(p));
+  }
+  async findCategory(id: string) {
+    const c = this.categories.find((x) => x.id === id && !x.deletedAt);
+    return c ? this.strip(c) : null;
+  }
+  async findProduct(id: string) {
+    const p = this.products.find((x) => x.id === id && !x.deletedAt);
+    return p ? this.strip(p) : null;
+  }
+  async insertCategory(c: CategoryRecord, now: Date) {
+    this.categories.push({ ...c, updatedAt: now, deletedAt: null });
+  }
+  async updateCategory(id: string, changes: Partial<CategoryRecord>, now: Date) {
+    const c = this.categories.find((x) => x.id === id && !x.deletedAt);
+    if (!c) return null;
+    Object.assign(c, changes, { updatedAt: now });
+    return this.strip(c);
+  }
+  async softDeleteCategory(id: string, now: Date) {
+    Object.assign(this.categories.find((x) => x.id === id)!, { deletedAt: now, updatedAt: now });
+  }
+  async countProducts(categoryId: string) {
+    return this.products.filter((p) => p.categoryId === categoryId && !p.deletedAt).length;
+  }
+  async insertProduct(p: ProductRecord, now: Date) {
+    this.products.push({ ...p, updatedAt: now, deletedAt: null });
+  }
+  async updateProduct(id: string, changes: Partial<ProductRecord>, now: Date) {
+    const p = this.products.find((x) => x.id === id && !x.deletedAt);
+    if (!p) return null;
+    Object.assign(p, changes, { updatedAt: now });
+    return this.strip(p);
+  }
+  async softDeleteProduct(id: string, now: Date) {
+    Object.assign(this.products.find((x) => x.id === id)!, { deletedAt: now, updatedAt: now });
   }
 }
 
@@ -154,9 +230,10 @@ export class FakeAuthRepo implements AuthRepo {
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
-  const sync = new FakeSyncRepo(devices);
-  const repos: Repos = { health: { ping: async () => {} }, auth, devices, sync };
-  return { repos, devices, sync, auth };
+  const catalog = new FakeCatalogRepo(devices);
+  const sync = new FakeSyncRepo(devices, catalog);
+  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sync };
+  return { repos, devices, sync, auth, catalog };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

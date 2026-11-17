@@ -5,6 +5,9 @@ import type { Db } from './db/client.js';
 import { DrizzleAuthRepo, type AuthRepo } from './modules/auth/auth.repo.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { AuthService, type OwnerContext } from './modules/auth/auth.service.js';
+import { DrizzleCatalogRepo, type CatalogRepo } from './modules/catalog/catalog.repo.js';
+import { catalogRoutes } from './modules/catalog/catalog.routes.js';
+import { CatalogService } from './modules/catalog/catalog.service.js';
 import { DrizzleDevicesRepo, type DevicesRepo } from './modules/devices/devices.repo.js';
 import { ownerDevicesRoutes } from './modules/devices/devices.owner.routes.js';
 import { devicesRoutes } from './modules/devices/devices.routes.js';
@@ -23,6 +26,7 @@ import { TokenService } from './shared/tokens.js';
 export interface Services {
   health: HealthService;
   auth: AuthService;
+  catalog: CatalogService;
   devices: DevicesService;
   sync: SyncService;
 }
@@ -45,6 +49,7 @@ declare module 'fastify' {
 export interface Repos {
   health: HealthRepo;
   auth: AuthRepo;
+  catalog: CatalogRepo;
   devices: DevicesRepo;
   sync: SyncRepo;
 }
@@ -53,6 +58,7 @@ export function reposFromDb(db: Db): Repos {
   return {
     health: new DrizzleHealthRepo(db),
     auth: new DrizzleAuthRepo(db),
+    catalog: new DrizzleCatalogRepo(db),
     devices: new DrizzleDevicesRepo(db),
     sync: new DrizzleSyncRepo(db),
   };
@@ -80,6 +86,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   const services: Services = {
     health: new HealthService(repos.health),
     auth: new AuthService(repos.auth, passwordHasher ?? new Argon2Hasher(), tokens, auth.refreshTtlDays),
+    catalog: new CatalogService(repos.catalog),
     devices: new DevicesService(repos.devices),
     sync: new SyncService(repos.sync),
   };
@@ -110,6 +117,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(authRoutes);
   await app.register(devicesRoutes);
   await app.register(ownerDevicesRoutes);
+  await app.register(catalogRoutes);
   await app.register(syncRoutes);
 
   return app;

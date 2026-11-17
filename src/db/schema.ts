@@ -139,7 +139,10 @@ export const categories = pgTable(
     name: text('name').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     color: text('color'),
+    /** Must be set to now() on EVERY change — the POS pulls "changed since cursor". */
     updatedAt: updatedAt(),
+    /** Soft delete: the row stays so the POS learns about the deletion on its next pull. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [index('categories_branch_updated_idx').on(t.branchId, t.updatedAt)],
 );
@@ -162,7 +165,11 @@ export const products = pgTable(
     station: text('station', { enum: ['bar', 'kitchen', 'none'] }).notNull().default('none'),
     modifierGroups: jsonb('modifier_groups').notNull().default(sql`'[]'::jsonb`),
     available: boolean('available').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    /** Must be set to now() on EVERY change — the POS pulls "changed since cursor". */
     updatedAt: updatedAt(),
+    /** Soft delete: the row stays so the POS learns about the deletion on its next pull. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [index('products_branch_updated_idx').on(t.branchId, t.updatedAt)],
 );

@@ -49,6 +49,8 @@ const Category = Type.Object({
   name: Type.String(),
   sortOrder: Type.Integer(),
   color: Type.Union([Type.String(), Type.Null()]),
+  /** true = removed by the owner → the POS deletes it locally. */
+  deleted: Type.Boolean(),
 });
 
 const Product = Type.Object({
@@ -61,6 +63,9 @@ const Product = Type.Object({
   station: Type.String(),
   modifierGroups: Type.Unknown(),
   available: Type.Boolean(),
+  sortOrder: Type.Integer(),
+  /** true = removed by the owner → the POS deletes it locally. */
+  deleted: Type.Boolean(),
 });
 
 export const PullResult = Type.Object({

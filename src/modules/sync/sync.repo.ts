@@ -1,4 +1,4 @@
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { categories, devices, events, products, syncErrors } from '../../db/schema.js';
 import { newId } from '../../shared/ids.js';
@@ -62,12 +62,30 @@ export class DrizzleSyncRepo implements SyncRepo {
       .where(eq(devices.id, deviceId));
   }
 
+  /**
+   * First pull (no cursor): the live menu only.
+   * Next pulls: everything changed since the cursor, INCLUDING deletions (deleted: true),
+   * so the POS can remove them.
+   */
   async catalogSince(branchId: string, since: Date | null) {
+    const catWhere = since
+      ? and(eq(categories.branchId, branchId), gt(categories.updatedAt, since))
+      : and(eq(categories.branchId, branchId), isNull(categories.deletedAt));
+    const prodWhere = since
+      ? and(eq(products.branchId, branchId), gt(products.updatedAt, since))
+      : and(eq(products.branchId, branchId), isNull(products.deletedAt));
+
     const [cats, prods] = await Promise.all([
       this.db
-        .select({ id: categories.id, name: categories.name, sortOrder: categories.sortOrder, color: categories.color })
+        .select({
+          id: categories.id,
+          name: categories.name,
+          sortOrder: categories.sortOrder,
+          color: categories.color,
+          deletedAt: categories.deletedAt,
+        })
         .from(categories)
-        .where(since ? and(eq(categories.branchId, branchId), gt(categories.updatedAt, since)) : eq(categories.branchId, branchId)),
+        .where(catWhere),
       this.db
         .select({
           id: products.id,
@@ -78,10 +96,15 @@ export class DrizzleSyncRepo implements SyncRepo {
           station: products.station,
           modifierGroups: products.modifierGroups,
           available: products.available,
+          sortOrder: products.sortOrder,
+          deletedAt: products.deletedAt,
         })
         .from(products)
-        .where(since ? and(eq(products.branchId, branchId), gt(products.updatedAt, since)) : eq(products.branchId, branchId)),
+        .where(prodWhere),
     ]);
-    return { categories: cats, products: prods };
+    return {
+      categories: cats.map(({ deletedAt, ...c }) => ({ ...c, deleted: deletedAt !== null })),
+      products: prods.map(({ deletedAt, ...p }) => ({ ...p, deleted: deletedAt !== null })),
+    };
   }
 }
