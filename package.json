@@ -4,19 +4,31 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.18.2",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/src/server.js",
+    "dev": "tsx watch --env-file=.env src/server.ts",
+    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/db/migrations','dist/db/migrations',{recursive:true})\"",
+    "start": "node --env-file=.env dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:up": "docker compose up -d",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file=.env src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "fastify": "^5.3.3"
+    "@fastify/type-provider-typebox": "^5.2.0",
+    "@sinclair/typebox": "^0.34.52",
+    "drizzle-orm": "^0.44.7",
+    "fastify": "^5",
+    "postgres": "^3.4.9",
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "drizzle-kit": "^0.31.11",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vitest": "^3.2.0"
