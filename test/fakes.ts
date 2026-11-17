@@ -2,7 +2,7 @@ import { v7 } from 'uuid';
 import { buildApp, type Repos } from '../src/app.js';
 import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
 import type { PasswordHasher } from '../src/shared/passwords.js';
-import type { DeviceRecord, DevicesRepo, NewDevice, PairingContext } from '../src/modules/devices/devices.repo.js';
+import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 
@@ -11,9 +11,15 @@ import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 export const tenantId = v7();
 export const branchId = v7();
 
+type FakeDevice = NewDevice & { disabled: boolean; lastSeq: number; lastSeenAt: Date | null; createdAt: Date };
+type FakeCode = { role: PairingContext['role']; used: boolean; expired?: boolean; branchId?: string; expiresAt?: Date };
+
 export class FakeDevicesRepo implements DevicesRepo {
-  devices: (NewDevice & { disabled: boolean; lastSeq: number })[] = [];
-  codes = new Map<string, { role: PairingContext['role']; used: boolean; expired?: boolean }>();
+  devices: FakeDevice[] = [];
+  codes = new Map<string, FakeCode>();
+
+  /** Branches come from the auth fake (signup) + the default test branch. */
+  constructor(private readonly auth?: FakeAuthRepo) {}
 
   async findByTokenHash(tokenHash: string): Promise<DeviceRecord | null> {
     return this.devices.find((d) => d.tokenHash === tokenHash) ?? null;
@@ -21,11 +27,49 @@ export class FakeDevicesRepo implements DevicesRepo {
 
   async pairWithCode(code: string, build: (ctx: PairingContext) => NewDevice) {
     const c = this.codes.get(code);
-    if (!c || c.used || c.expired) return null;
+    if (!c || c.used || c.expired || (c.expiresAt && c.expiresAt <= new Date())) return null;
     c.used = true;
-    const d = build({ tenantId, branchId, role: c.role, deviceNumber: this.devices.length + 1 });
-    this.devices.push({ ...d, disabled: false, lastSeq: 0 });
+    const b = c.branchId ?? branchId;
+    const t = (await this.branchTenant(b)) ?? tenantId;
+    const d = build({ tenantId: t, branchId: b, role: c.role, deviceNumber: this.devices.filter((x) => x.branchId === b).length + 1 });
+    this.devices.push({ ...d, disabled: false, lastSeq: 0, lastSeenAt: null, createdAt: new Date() });
     return d;
+  }
+
+  async branchTenant(id: string) {
+    if (id === branchId) return tenantId;
+    return this.auth?.branches.find((b) => b.id === id)?.tenantId ?? null;
+  }
+
+  async createPairingCode(c: PairingCodeRecord) {
+    this.codes.set(c.code, { role: c.role, used: false, branchId: c.branchId, expiresAt: c.expiresAt });
+  }
+
+  async listActivePairingCodes(id: string, now: Date) {
+    return [...this.codes.entries()]
+      .filter(([, c]) => c.branchId === id && !c.used && !c.expired && (!c.expiresAt || c.expiresAt > now))
+      .map(([code, c]) => ({ code, branchId: id, role: c.role, expiresAt: c.expiresAt ?? now }));
+  }
+
+  private summary(d: FakeDevice): DeviceSummary {
+    const { id, branchId: b, code, name, role, disabled, lastSeq, lastSeenAt, createdAt } = d;
+    return { id, branchId: b, code, name, role, disabled, lastSeq, lastSeenAt, createdAt };
+  }
+
+  async listDevices(id: string) {
+    return this.devices.filter((d) => d.branchId === id).map((d) => this.summary(d));
+  }
+
+  async findDevice(id: string) {
+    const d = this.devices.find((x) => x.id === id);
+    return d ? { ...this.summary(d), tenantId: d.tenantId } : null;
+  }
+
+  async updateDevice(id: string, changes: { name?: string; disabled?: boolean }) {
+    const d = this.devices.find((x) => x.id === id);
+    if (!d) return null;
+    Object.assign(d, changes);
+    return this.summary(d);
   }
 }
 
@@ -52,7 +96,10 @@ export class FakeSyncRepo implements SyncRepo {
 
   async touchDevice(deviceId: string, maxSeq: number) {
     const d = this.devices.devices.find((x) => x.id === deviceId);
-    if (d) d.lastSeq = Math.max(d.lastSeq, maxSeq);
+    if (d) {
+      d.lastSeq = Math.max(d.lastSeq, maxSeq);
+      d.lastSeenAt = new Date();
+    }
   }
 
   async catalogSince(_branchId: string, since: Date | null) {
@@ -105,9 +152,9 @@ export class FakeAuthRepo implements AuthRepo {
 }
 
 export function fakeRepos() {
-  const devices = new FakeDevicesRepo();
-  const sync = new FakeSyncRepo(devices);
   const auth = new FakeAuthRepo();
+  const devices = new FakeDevicesRepo(auth);
+  const sync = new FakeSyncRepo(devices);
   const repos: Repos = { health: { ping: async () => {} }, auth, devices, sync };
   return { repos, devices, sync, auth };
 }

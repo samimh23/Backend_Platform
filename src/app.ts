@@ -6,6 +6,7 @@ import { DrizzleAuthRepo, type AuthRepo } from './modules/auth/auth.repo.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { AuthService, type OwnerContext } from './modules/auth/auth.service.js';
 import { DrizzleDevicesRepo, type DevicesRepo } from './modules/devices/devices.repo.js';
+import { ownerDevicesRoutes } from './modules/devices/devices.owner.routes.js';
 import { devicesRoutes } from './modules/devices/devices.routes.js';
 import { DevicesService, type DeviceContext } from './modules/devices/devices.service.js';
 import { DrizzleHealthRepo } from './modules/health/health.repo.js';
@@ -108,6 +109,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(devicesRoutes);
+  await app.register(ownerDevicesRoutes);
   await app.register(syncRoutes);
 
   return app;

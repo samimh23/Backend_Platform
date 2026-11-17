@@ -45,6 +45,8 @@ export class SyncService {
     // Cursor = time the query STARTED, so changes made during the query are picked up next time.
     const startedAt = this.now();
     const data = await this.repo.catalogSince(ctx.branchId, cursor ? new Date(cursor) : null);
+    // The POS pulls every 15 s even when idle → keeps "online" accurate in the owner app.
+    await this.repo.touchDevice(ctx.deviceId, 0);
     return { cursor: startedAt.toISOString(), ...data };
   }
 }

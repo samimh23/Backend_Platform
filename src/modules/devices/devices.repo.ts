@@ -1,4 +1,4 @@
-import { and, count, eq, gt, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { branches, devices, pairingCodes, type DeviceRole } from '../../db/schema.js';
 
@@ -29,14 +29,57 @@ export interface PairingContext {
   deviceNumber: number;
 }
 
+/** What the owner sees about a device. */
+export interface DeviceSummary {
+  id: string;
+  branchId: string;
+  code: string;
+  name: string;
+  role: DeviceRole;
+  disabled: boolean;
+  lastSeq: number;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+}
+
+export interface PairingCodeRecord {
+  code: string;
+  branchId: string;
+  role: DeviceRole;
+  expiresAt: Date;
+}
+
 export interface DevicesRepo {
+  // ── Used by devices (POS) ──
   findByTokenHash(tokenHash: string): Promise<DeviceRecord | null>;
   /**
    * Atomically: consume a valid (unused, not expired) pairing code and create
    * the device. Returns null if the code is invalid.
    */
   pairWithCode(code: string, build: (ctx: PairingContext) => NewDevice): Promise<NewDevice | null>;
+
+  // ── Used by the owner app ──
+  /** Tenant owning this branch, or null if the branch does not exist. */
+  branchTenant(branchId: string): Promise<string | null>;
+  createPairingCode(code: PairingCodeRecord): Promise<void>;
+  /** Unused, not expired codes. */
+  listActivePairingCodes(branchId: string, now: Date): Promise<PairingCodeRecord[]>;
+  listDevices(branchId: string): Promise<DeviceSummary[]>;
+  findDevice(id: string): Promise<(DeviceSummary & { tenantId: string }) | null>;
+  updateDevice(id: string, changes: { name?: string; disabled?: boolean }): Promise<DeviceSummary | null>;
 }
+
+const summaryColumns = {
+  id: devices.id,
+  branchId: devices.branchId,
+  code: devices.code,
+  name: devices.name,
+  role: devices.role,
+  disabled: devices.disabled,
+  lastSeq: devices.lastSeq,
+  lastSeenAt: devices.lastSeenAt,
+  createdAt: devices.createdAt,
+};
 
 export class DrizzleDevicesRepo implements DevicesRepo {
   constructor(private readonly db: Db) {}
@@ -82,5 +125,39 @@ export class DrizzleDevicesRepo implements DevicesRepo {
       await tx.insert(devices).values(device);
       return device;
     });
+  }
+
+  async branchTenant(branchId: string): Promise<string | null> {
+    const [b] = await this.db.select({ tenantId: branches.tenantId }).from(branches).where(eq(branches.id, branchId));
+    return b?.tenantId ?? null;
+  }
+
+  async createPairingCode(code: PairingCodeRecord): Promise<void> {
+    await this.db.insert(pairingCodes).values(code);
+  }
+
+  listActivePairingCodes(branchId: string, now: Date): Promise<PairingCodeRecord[]> {
+    return this.db
+      .select({ code: pairingCodes.code, branchId: pairingCodes.branchId, role: pairingCodes.role, expiresAt: pairingCodes.expiresAt })
+      .from(pairingCodes)
+      .where(and(eq(pairingCodes.branchId, branchId), isNull(pairingCodes.usedAt), gt(pairingCodes.expiresAt, now)))
+      .orderBy(asc(pairingCodes.expiresAt));
+  }
+
+  listDevices(branchId: string): Promise<DeviceSummary[]> {
+    return this.db.select(summaryColumns).from(devices).where(eq(devices.branchId, branchId)).orderBy(asc(devices.createdAt));
+  }
+
+  async findDevice(id: string) {
+    const [d] = await this.db
+      .select({ ...summaryColumns, tenantId: devices.tenantId })
+      .from(devices)
+      .where(eq(devices.id, id));
+    return d ?? null;
+  }
+
+  async updateDevice(id: string, changes: { name?: string; disabled?: boolean }) {
+    const [d] = await this.db.update(devices).set(changes).where(eq(devices.id, id)).returning(summaryColumns);
+    return d ?? null;
   }
 }

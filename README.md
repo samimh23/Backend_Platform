@@ -39,6 +39,10 @@ pnpm test
 | POST | `/v1/auth/refresh` | refresh token | New tokens (rotation; reusing an old one closes all sessions) |
 | POST | `/v1/auth/logout` | refresh token | Close this session |
 | GET | `/v1/auth/me` | owner | User, business, branches |
+| POST | `/v1/owner/branches/:branchId/pairing-codes` | owner (role owner) | New one-time code `{ role: hub\|pos }`, valid 15 min |
+| GET | `/v1/owner/branches/:branchId/pairing-codes` | owner | Unused, not expired codes |
+| GET | `/v1/owner/branches/:branchId/devices` | owner | Devices with `online` (synced < 60 s), last seen, events received |
+| PATCH | `/v1/owner/devices/:deviceId` | owner (role owner) | Rename, disable (POS locked on next sync) or re-enable |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
@@ -53,7 +57,7 @@ Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew wi
 - Wrong password and unknown email return the same `INVALID_CREDENTIALS` (no account guessing).
 
 ### Pairing flow
-1. Owner app creates a one-time code (for now: `pnpm db:seed`).
+1. Owner app creates a one-time code (`POST /v1/owner/branches/:branchId/pairing-codes`, or `pnpm db:seed` in dev).
 2. The POS sends the code + a name + its Ed25519 public key to `/v1/devices/pair`.
 3. The server returns a token (shown once, only its hash is stored) and a device code `T1`, `T2`…
 4. The POS keeps the token in secure storage and uses it for every sync call.
