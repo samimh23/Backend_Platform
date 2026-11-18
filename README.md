@@ -50,13 +50,18 @@ pnpm test
 | PATCH / DELETE | `/v1/owner/products/:id` | owner | Edit price, availability, options… / delete |
 | GET / POST | `/v1/owner/branches/:branchId/staff` | owner (create: role owner) | Staff who log in on the POS: `{ name, role, pin }` (4–6 digits) |
 | PATCH | `/v1/owner/staff/:id` | owner (role owner) | Rename, change role or PIN, deactivate |
+| GET | `/v1/owner/branches/:branchId/floor` | owner | Rooms (`areas`) and tables |
+| POST | `/v1/owner/branches/:branchId/areas` | owner | `{ name, sortOrder? }` — "Salle", "Terrasse" |
+| PATCH / DELETE | `/v1/owner/areas/:id` | owner | Rename / delete (refused with `AREA_NOT_EMPTY` while it has tables) |
+| POST | `/v1/owner/branches/:branchId/tables` | owner | `{ areaId, names: ["1","2",…], seats? }` — several at once; names unique in the branch (`TABLE_NAME_TAKEN`) |
+| PATCH / DELETE | `/v1/owner/tables/:id` | owner | Rename, seats, move to another room / delete |
 | GET | `/v1/owner/branches/:branchId/sales/summary?date=` | owner | Day totals: revenue, tickets, average, by payment, by hour, top 5 products, VAT |
 | GET | `/v1/owner/branches/:branchId/sales/orders?date=&status=&limit=` | owner | Tickets of the day, newest first |
 | GET | `/v1/owner/orders/:orderId` | owner | Ticket detail: lines (incl. removed ones), payments, VAT |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
-| GET | `/v1/sync/pull?cursor=` | device | Menu (categories, products) and staff (PIN hashes, deactivations) changed since cursor |
+| GET | `/v1/sync/pull?cursor=` | device | Menu, staff (PIN hashes, deactivations), rooms and tables changed since cursor |
 
 Device auth header: `Authorization: Device <token>`.
 Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew with `/v1/auth/refresh`).

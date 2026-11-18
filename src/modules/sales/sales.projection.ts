@@ -6,7 +6,8 @@ import type { SyncEvent } from '../sync/sync.schema.js';
  * transaction that stores the events, so events and sales never disagree.
  */
 export type ProjectionOp =
-  | { kind: 'openOrder'; orderId: string; type: string; openedAt: Date }
+  | { kind: 'openOrder'; orderId: string; type: string; openedAt: Date; table: TableRef | null }
+  | { kind: 'moveTable'; orderId: string; table: TableRef | null }
   | {
       kind: 'addLine';
       orderId: string;
@@ -31,6 +32,12 @@ export type ProjectionOp =
   | { kind: 'closeOrder'; orderId: string; closedAt: Date; total: number; itemCount: number; receiptNumber: string | null }
   | { kind: 'cancelOrder'; orderId: string; closedAt: Date };
 
+/** Table the ticket is on; the name is a snapshot (tables can be renamed later). */
+export interface TableRef {
+  id: string;
+  name: string;
+}
+
 export interface ProjectionProblem {
   eventId: string;
   reason: string;
@@ -51,6 +58,14 @@ const int = (p: Payload, k: string, fallback?: number): number => {
   return v;
 };
 const optStr = (p: Payload, k: string): string | null => (typeof p[k] === 'string' ? (p[k] as string) : null);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** tableId + tableName, both or none. */
+const tableRef = (p: Payload): TableRef | null => {
+  if (p.tableId === undefined || p.tableId === null) return null;
+  const id = str(p, 'tableId');
+  if (!UUID.test(id)) throw new BadPayload('payload.tableId must be a uuid');
+  return { id, name: str(p, 'tableName') };
+};
 
 /** Events must be from one device, in deviceSeq order. Unknown event types are ignored (not an error). */
 export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; problems: ProjectionProblem[] } {
@@ -63,7 +78,18 @@ export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; probl
     try {
       switch (e.type) {
         case 'order.opened':
-          ops.push({ kind: 'openOrder', orderId: e.entityId, type: optStr(p, 'type') ?? 'takeaway', openedAt: at });
+          ops.push({
+            kind: 'openOrder',
+            orderId: e.entityId,
+            type: optStr(p, 'type') ?? 'takeaway',
+            openedAt: at,
+            table: tableRef(p),
+          });
+          break;
+
+        case 'order.table_changed':
+          // Ticket moved to another table (or from the counter to a table).
+          ops.push({ kind: 'moveTable', orderId: e.entityId, table: tableRef(p) });
           break;
 
         case 'order.item_added': {

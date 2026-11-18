@@ -135,5 +135,6 @@ function orderView(o: SalesOrderRecord): OrderView {
     itemCount: o.itemCount,
     paymentMethod: o.paymentMethod,
     deviceCode: o.deviceCode,
+    tableName: o.tableName,
   };
 }

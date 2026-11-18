@@ -43,6 +43,13 @@
       "when": 1795014574174,
       "tag": "0005_gray_justin_hammer",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795027791986,
+      "tag": "0006_lowly_silhouette",
+      "breakpoints": true
     }
   ]
 }

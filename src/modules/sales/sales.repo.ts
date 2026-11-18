@@ -15,6 +15,7 @@ export interface SalesOrderRecord {
   receiptNumber: string | null;
   paymentMethod: string | null;
   deviceCode: string | null;
+  tableName: string | null;
 }
 
 export interface SalesLineRecord {
@@ -67,6 +68,7 @@ const orderColumns = {
   receiptNumber: salesOrders.receiptNumber,
   paymentMethod: salesOrders.paymentMethod,
   deviceCode: devices.code,
+  tableName: salesOrders.tableName,
 };
 
 export class DrizzleSalesRepo implements SalesRepo {

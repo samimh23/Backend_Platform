@@ -236,6 +236,9 @@ export const salesOrders = pgTable(
     receiptNumber: text('receipt_number'),
     /** cash | card | mixed */
     paymentMethod: text('payment_method'),
+    /** Table the ticket is on (null = counter / takeaway). Name is a snapshot. */
+    tableId: uuid('table_id'),
+    tableName: text('table_name'),
   },
   (t) => [
     index('sales_orders_branch_closed_idx').on(t.branchId, t.closedAt),
@@ -304,4 +307,42 @@ export const staff = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('staff_branch_updated_idx').on(t.branchId, t.updatedAt)],
+);
+
+// ── Floor: rooms and tables (synced to the POS like the menu) ───────
+
+/** "Salle", "Terrasse"… */
+export const floorAreas = pgTable(
+  'floor_areas',
+  {
+    id: uuid('id').primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => [index('floor_areas_branch_updated_idx').on(t.branchId, t.updatedAt)],
+);
+
+/** A table customers sit at. Name is unique in the branch ("4", "T2"…). */
+export const diningTables = pgTable(
+  'dining_tables',
+  {
+    id: uuid('id').primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    areaId: uuid('area_id')
+      .notNull()
+      .references(() => floorAreas.id),
+    name: text('name').notNull(),
+    seats: integer('seats').notNull().default(4),
+    sortOrder: integer('sort_order').notNull().default(0),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => [index('dining_tables_branch_updated_idx').on(t.branchId, t.updatedAt)],
 );

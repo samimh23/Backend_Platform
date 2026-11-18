@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { categories, devices, events, products, staff, syncErrors } from '../../db/schema.js';
+import { categories, devices, diningTables, events, floorAreas, products, staff, syncErrors } from '../../db/schema.js';
 import { newId } from '../../shared/ids.js';
 import type { DeviceContext } from '../devices/devices.service.js';
 import { applyProjection } from '../sales/sales.apply.js';
@@ -25,6 +25,8 @@ export interface SyncRepo {
   catalogSince(branchId: string, since: Date | null): Promise<Pick<PullResult, 'categories' | 'products'>>;
   /** First pull: active staff only. Next pulls: every change, including deactivations. */
   staffSince(branchId: string, since: Date | null): Promise<PullResult['staff']>;
+  /** Same rules as the menu: live rows first, then changes incl. deletions. */
+  floorSince(branchId: string, since: Date | null): Promise<Pick<PullResult, 'areas' | 'tables'>>;
 }
 
 export class DrizzleSyncRepo implements SyncRepo {
@@ -125,6 +127,38 @@ export class DrizzleSyncRepo implements SyncRepo {
     return {
       categories: cats.map(({ deletedAt, ...c }) => ({ ...c, deleted: deletedAt !== null })),
       products: prods.map(({ deletedAt, ...p }) => ({ ...p, deleted: deletedAt !== null })),
+    };
+  }
+
+  async floorSince(branchId: string, since: Date | null) {
+    const [areas, tables] = await Promise.all([
+      this.db
+        .select({ id: floorAreas.id, name: floorAreas.name, sortOrder: floorAreas.sortOrder, deletedAt: floorAreas.deletedAt })
+        .from(floorAreas)
+        .where(
+          since
+            ? and(eq(floorAreas.branchId, branchId), gt(floorAreas.updatedAt, since))
+            : and(eq(floorAreas.branchId, branchId), isNull(floorAreas.deletedAt)),
+        ),
+      this.db
+        .select({
+          id: diningTables.id,
+          areaId: diningTables.areaId,
+          name: diningTables.name,
+          seats: diningTables.seats,
+          sortOrder: diningTables.sortOrder,
+          deletedAt: diningTables.deletedAt,
+        })
+        .from(diningTables)
+        .where(
+          since
+            ? and(eq(diningTables.branchId, branchId), gt(diningTables.updatedAt, since))
+            : and(eq(diningTables.branchId, branchId), isNull(diningTables.deletedAt)),
+        ),
+    ]);
+    return {
+      areas: areas.map(({ deletedAt, ...a }) => ({ ...a, deleted: deletedAt !== null })),
+      tables: tables.map(({ deletedAt, ...t }) => ({ ...t, deleted: deletedAt !== null })),
     };
   }
 

@@ -15,6 +15,9 @@ import { DevicesService, type DeviceContext } from './modules/devices/devices.se
 import { DrizzleHealthRepo } from './modules/health/health.repo.js';
 import { healthRoutes } from './modules/health/health.routes.js';
 import { HealthService, type HealthRepo } from './modules/health/health.service.js';
+import { DrizzleFloorRepo, type FloorRepo } from './modules/floor/floor.repo.js';
+import { floorRoutes } from './modules/floor/floor.routes.js';
+import { FloorService } from './modules/floor/floor.service.js';
 import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
 import { salesRoutes } from './modules/sales/sales.routes.js';
 import { SalesService } from './modules/sales/sales.service.js';
@@ -34,6 +37,7 @@ export interface Services {
   auth: AuthService;
   catalog: CatalogService;
   devices: DevicesService;
+  floor: FloorService;
   sales: SalesService;
   staff: StaffService;
   sync: SyncService;
@@ -59,6 +63,7 @@ export interface Repos {
   auth: AuthRepo;
   catalog: CatalogRepo;
   devices: DevicesRepo;
+  floor: FloorRepo;
   sales: SalesRepo;
   staff: StaffRepo;
   sync: SyncRepo;
@@ -70,6 +75,7 @@ export function reposFromDb(db: Db): Repos {
     auth: new DrizzleAuthRepo(db),
     catalog: new DrizzleCatalogRepo(db),
     devices: new DrizzleDevicesRepo(db),
+    floor: new DrizzleFloorRepo(db),
     sales: new DrizzleSalesRepo(db),
     staff: new DrizzleStaffRepo(db),
     sync: new DrizzleSyncRepo(db),
@@ -100,6 +106,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     auth: new AuthService(repos.auth, passwordHasher ?? new Argon2Hasher(), tokens, auth.refreshTtlDays),
     catalog: new CatalogService(repos.catalog),
     devices: new DevicesService(repos.devices),
+    floor: new FloorService(repos.floor),
     sales: new SalesService(repos.sales),
     staff: new StaffService(repos.staff),
     sync: new SyncService(repos.sync),
@@ -132,6 +139,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(devicesRoutes);
   await app.register(ownerDevicesRoutes);
   await app.register(catalogRoutes);
+  await app.register(floorRoutes);
   await app.register(salesRoutes);
   await app.register(staffRoutes);
   await app.register(syncRoutes);

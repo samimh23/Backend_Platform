@@ -21,8 +21,17 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
             deviceId: ctx.deviceId,
             type: op.type,
             openedAt: op.openedAt,
+            tableId: op.table?.id ?? null,
+            tableName: op.table?.name ?? null,
           })
           .onConflictDoNothing();
+        break;
+
+      case 'moveTable':
+        await tx
+          .update(salesOrders)
+          .set({ tableId: op.table?.id ?? null, tableName: op.table?.name ?? null, type: op.table ? 'table' : 'takeaway' })
+          .where(eq(salesOrders.id, op.orderId));
         break;
 
       case 'addLine':

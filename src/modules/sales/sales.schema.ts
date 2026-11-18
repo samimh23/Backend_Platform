@@ -49,6 +49,8 @@ export const OrderView = Type.Object({
   paymentMethod: Type.Union([Type.String(), Type.Null()]),
   /** T1, T2… — which POS took the order. */
   deviceCode: Type.Union([Type.String(), Type.Null()]),
+  /** Table name at sale time, null = counter / takeaway. */
+  tableName: Type.Union([Type.String(), Type.Null()]),
 });
 export type OrderView = Static<typeof OrderView>;
 

@@ -40,15 +40,19 @@ export class SyncService {
     return { accepted: valid.map((e) => e.id), rejected, duplicates: valid.length - inserted.length };
   }
 
-  /** Menu changes made in the cloud since the device's last cursor. */
+  /** Menu, staff and floor changes made in the cloud since the device's last cursor. */
   async pull(ctx: DeviceContext, cursor: string | undefined): Promise<PullResult> {
     // Cursor = time the query STARTED, so changes made during the query are picked up next time.
     const startedAt = this.now();
     const since = cursor ? new Date(cursor) : null;
-    const [data, staff] = await Promise.all([this.repo.catalogSince(ctx.branchId, since), this.repo.staffSince(ctx.branchId, since)]);
+    const [data, staff, floor] = await Promise.all([
+      this.repo.catalogSince(ctx.branchId, since),
+      this.repo.staffSince(ctx.branchId, since),
+      this.repo.floorSince(ctx.branchId, since),
+    ]);
     // The POS pulls every 15 s even when idle → keeps "online" accurate in the owner app.
     await this.repo.touchDevice(ctx.deviceId, 0);
-    return { cursor: startedAt.toISOString(), ...data, staff };
+    return { cursor: startedAt.toISOString(), ...data, staff, ...floor };
   }
 }
 

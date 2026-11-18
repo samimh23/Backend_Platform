@@ -3,6 +3,7 @@ import { buildApp, type Repos } from '../src/app.js';
 import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
 import type { PasswordHasher } from '../src/shared/passwords.js';
 import type { StaffRecord, StaffRepo } from '../src/modules/staff/staff.repo.js';
+import type { AreaRecord, FloorRepo, TableRecord } from '../src/modules/floor/floor.repo.js';
 import type { DeviceContext } from '../src/modules/devices/devices.service.js';
 import { projectEvents, type ProjectionOp } from '../src/modules/sales/sales.projection.js';
 import type { SalesLineRecord, SalesOrderRecord, SalesPaymentRecord, SalesRepo } from '../src/modules/sales/sales.repo.js';
@@ -87,7 +88,20 @@ export class FakeSyncRepo implements SyncRepo {
     private readonly catalog: FakeCatalogRepo,
     readonly sales: FakeSalesRepo,
     private readonly staff: FakeStaffRepo,
+    private readonly floor: FakeFloorRepo,
   ) {}
+
+  async floorSince(b: string, since: Date | null) {
+    const pick = <T extends { branchId: string; updatedAt: Date; deletedAt: Date | null }>(rows: T[]) =>
+      rows.filter((r) => r.branchId === b && (since ? r.updatedAt > since : r.deletedAt === null));
+    return {
+      areas: pick(this.floor.areas).map(({ id, name, sortOrder, deletedAt }) => ({ id, name, sortOrder, deleted: deletedAt !== null })),
+      tables: pick(this.floor.tables).map(({ branchId: _b, updatedAt: _u, deletedAt, ...t }) => ({
+        ...t,
+        deleted: deletedAt !== null,
+      })),
+    };
+  }
 
   async staffSince(b: string, since: Date | null) {
     return this.staff.rows
@@ -243,6 +257,64 @@ export class FakeAuthRepo implements AuthRepo {
   }
 }
 
+export class FakeFloorRepo implements FloorRepo {
+  areas: (AreaRecord & Stamped)[] = [];
+  tables: (TableRecord & Stamped)[] = [];
+  constructor(private readonly devices: FakeDevicesRepo) {}
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  private strip<T extends Stamped>({ updatedAt: _u, deletedAt: _d, ...r }: T) {
+    return r;
+  }
+  private sorted<T extends { sortOrder: number; name: string }>(rows: T[]) {
+    return [...rows].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+  async listAreas(b: string) {
+    return this.sorted(this.areas.filter((a) => a.branchId === b && !a.deletedAt)).map((a) => this.strip(a));
+  }
+  async listTables(b: string) {
+    return this.sorted(this.tables.filter((t) => t.branchId === b && !t.deletedAt)).map((t) => this.strip(t));
+  }
+  async findArea(id: string) {
+    const a = this.areas.find((x) => x.id === id && !x.deletedAt);
+    return a ? this.strip(a) : null;
+  }
+  async findTable(id: string) {
+    const t = this.tables.find((x) => x.id === id && !x.deletedAt);
+    return t ? this.strip(t) : null;
+  }
+  async insertArea(a: AreaRecord, now: Date) {
+    this.areas.push({ ...a, updatedAt: now, deletedAt: null });
+  }
+  async updateArea(id: string, changes: Partial<AreaRecord>, now: Date) {
+    const a = this.areas.find((x) => x.id === id && !x.deletedAt);
+    if (!a) return null;
+    Object.assign(a, changes, { updatedAt: now });
+    return this.strip(a);
+  }
+  async softDeleteArea(id: string, now: Date) {
+    const a = this.areas.find((x) => x.id === id);
+    if (a) Object.assign(a, { deletedAt: now, updatedAt: now });
+  }
+  async countTables(areaId: string) {
+    return this.tables.filter((t) => t.areaId === areaId && !t.deletedAt).length;
+  }
+  async insertTables(list: TableRecord[], now: Date) {
+    for (const t of list) this.tables.push({ ...t, updatedAt: now, deletedAt: null });
+  }
+  async updateTable(id: string, changes: Partial<TableRecord>, now: Date) {
+    const t = this.tables.find((x) => x.id === id && !x.deletedAt);
+    if (!t) return null;
+    Object.assign(t, changes, { updatedAt: now });
+    return this.strip(t);
+  }
+  async softDeleteTable(id: string, now: Date) {
+    const t = this.tables.find((x) => x.id === id);
+    if (t) Object.assign(t, { deletedAt: now, updatedAt: now });
+  }
+}
+
 export class FakeStaffRepo implements StaffRepo {
   rows: (StaffRecord & { updatedAt: Date })[] = [];
   constructor(private readonly devices: FakeDevicesRepo) {}
@@ -272,7 +344,7 @@ export class FakeStaffRepo implements StaffRepo {
 
 /** In-memory sales tables, filled by the projection like the real ones. */
 export class FakeSalesRepo implements SalesRepo {
-  orders: (Omit<SalesOrderRecord, 'deviceCode'> & { deviceId: string })[] = [];
+  orders: (Omit<SalesOrderRecord, 'deviceCode'> & { deviceId: string; tableId: string | null })[] = [];
   lines: SalesLineRecord[] = [];
   payments: SalesPaymentRecord[] = [];
 
@@ -297,7 +369,12 @@ export class FakeSalesRepo implements SalesRepo {
               itemCount: 0,
               receiptNumber: null,
               paymentMethod: null,
+              tableId: op.table?.id ?? null,
+              tableName: op.table?.name ?? null,
             });
+          break;
+        case 'moveTable':
+          if (order) Object.assign(order, { tableId: op.table?.id ?? null, tableName: op.table?.name ?? null, type: op.table ? 'table' : 'takeaway' });
           break;
         case 'addLine':
           if (!this.lines.some((l) => l.id === op.line.id)) this.lines.push({ ...op.line, orderId: op.orderId, voided: false });
@@ -355,9 +432,10 @@ export function fakeRepos() {
   const catalog = new FakeCatalogRepo(devices);
   const sales = new FakeSalesRepo(devices);
   const staff = new FakeStaffRepo(devices);
-  const sync = new FakeSyncRepo(devices, catalog, sales, staff);
-  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sales, staff, sync };
-  return { repos, devices, sync, auth, catalog, sales, staff };
+  const floor = new FakeFloorRepo(devices);
+  const sync = new FakeSyncRepo(devices, catalog, sales, staff, floor);
+  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, floor, sales, staff, sync };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

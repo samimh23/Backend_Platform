@@ -78,11 +78,30 @@ const StaffMember = Type.Object({
   active: Type.Boolean(),
 });
 
+const Area = Type.Object({
+  id: Type.String(),
+  name: Type.String(),
+  sortOrder: Type.Integer(),
+  deleted: Type.Boolean(),
+});
+
+const DiningTable = Type.Object({
+  id: Type.String(),
+  areaId: Type.String(),
+  name: Type.String(),
+  seats: Type.Integer(),
+  sortOrder: Type.Integer(),
+  deleted: Type.Boolean(),
+});
+
 export const PullResult = Type.Object({
   /** Send this back as ?cursor= next time. */
   cursor: Type.String(),
   categories: Type.Array(Category),
   products: Type.Array(Product),
   staff: Type.Array(StaffMember),
+  /** Rooms and tables ("Salle", "Terrasse" → tables 1…12). */
+  areas: Type.Array(Area),
+  tables: Type.Array(DiningTable),
 });
 export type PullResult = Static<typeof PullResult>;
