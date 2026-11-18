@@ -56,7 +56,7 @@ pnpm test
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
-| GET | `/v1/sync/pull?cursor=` | device | Menu (categories, products) changed since cursor |
+| GET | `/v1/sync/pull?cursor=` | device | Menu (categories, products) and staff (PIN hashes, deactivations) changed since cursor |
 
 Device auth header: `Authorization: Device <token>`.
 Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew with `/v1/auth/refresh`).
