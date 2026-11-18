@@ -274,3 +274,34 @@ export const salesPayments = pgTable(
   },
   (t) => [index('sales_payments_order_idx').on(t.orderId)],
 );
+
+// ── Staff (log in on the POS with a PIN) ────────────────────────
+
+export const staffRoles = ['manager', 'cashier', 'server', 'kitchen'] as const;
+export type StaffRole = (typeof staffRoles)[number];
+
+/**
+ * People who use the POS. The PIN is checked OFFLINE on the POS, so the POS
+ * receives the hash (PBKDF2-SHA256, salted) — never the PIN itself.
+ */
+export const staff = pgTable(
+  'staff',
+  {
+    id: uuid('id').primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    name: text('name').notNull(),
+    role: text('role', { enum: staffRoles }).notNull(),
+    /** "pbkdf2-sha256$<iterations>$<salt b64url>$<hash b64url>" */
+    pinHash: text('pin_hash').notNull(),
+    active: boolean('active').notNull().default(true),
+    /** Set to now() on every change — the POS pulls "changed since cursor". */
+    updatedAt: updatedAt(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('staff_branch_updated_idx').on(t.branchId, t.updatedAt)],
+);

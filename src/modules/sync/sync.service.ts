@@ -44,10 +44,11 @@ export class SyncService {
   async pull(ctx: DeviceContext, cursor: string | undefined): Promise<PullResult> {
     // Cursor = time the query STARTED, so changes made during the query are picked up next time.
     const startedAt = this.now();
-    const data = await this.repo.catalogSince(ctx.branchId, cursor ? new Date(cursor) : null);
+    const since = cursor ? new Date(cursor) : null;
+    const [data, staff] = await Promise.all([this.repo.catalogSince(ctx.branchId, since), this.repo.staffSince(ctx.branchId, since)]);
     // The POS pulls every 15 s even when idle → keeps "online" accurate in the owner app.
     await this.repo.touchDevice(ctx.deviceId, 0);
-    return { cursor: startedAt.toISOString(), ...data };
+    return { cursor: startedAt.toISOString(), ...data, staff };
   }
 }
 

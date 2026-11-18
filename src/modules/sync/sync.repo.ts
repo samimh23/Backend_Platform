@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { categories, devices, events, products, syncErrors } from '../../db/schema.js';
+import { categories, devices, events, products, staff, syncErrors } from '../../db/schema.js';
 import { newId } from '../../shared/ids.js';
 import type { DeviceContext } from '../devices/devices.service.js';
 import { applyProjection } from '../sales/sales.apply.js';
@@ -22,7 +22,9 @@ export interface SyncRepo {
   recordErrors(deviceId: string, errors: SyncErrorRecord[]): Promise<void>;
   /** Updates last seen time and the highest sequence received. */
   touchDevice(deviceId: string, maxSeq: number): Promise<void>;
-  catalogSince(branchId: string, since: Date | null): Promise<Omit<PullResult, 'cursor'>>;
+  catalogSince(branchId: string, since: Date | null): Promise<Pick<PullResult, 'categories' | 'products'>>;
+  /** First pull: active staff only. Next pulls: every change, including deactivations. */
+  staffSince(branchId: string, since: Date | null): Promise<PullResult['staff']>;
 }
 
 export class DrizzleSyncRepo implements SyncRepo {
@@ -124,5 +126,16 @@ export class DrizzleSyncRepo implements SyncRepo {
       categories: cats.map(({ deletedAt, ...c }) => ({ ...c, deleted: deletedAt !== null })),
       products: prods.map(({ deletedAt, ...p }) => ({ ...p, deleted: deletedAt !== null })),
     };
+  }
+
+  staffSince(branchId: string, since: Date | null) {
+    return this.db
+      .select({ id: staff.id, name: staff.name, role: staff.role, pinHash: staff.pinHash, active: staff.active })
+      .from(staff)
+      .where(
+        since
+          ? and(eq(staff.branchId, branchId), gt(staff.updatedAt, since))
+          : and(eq(staff.branchId, branchId), eq(staff.active, true)),
+      );
   }
 }

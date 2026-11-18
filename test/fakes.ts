@@ -2,6 +2,7 @@ import { v7 } from 'uuid';
 import { buildApp, type Repos } from '../src/app.js';
 import type { AuthRepo, BranchRecord, NewAccount, RefreshTokenRecord, TenantRecord, UserRecord } from '../src/modules/auth/auth.repo.js';
 import type { PasswordHasher } from '../src/shared/passwords.js';
+import type { StaffRecord, StaffRepo } from '../src/modules/staff/staff.repo.js';
 import type { DeviceContext } from '../src/modules/devices/devices.service.js';
 import { projectEvents, type ProjectionOp } from '../src/modules/sales/sales.projection.js';
 import type { SalesLineRecord, SalesOrderRecord, SalesPaymentRecord, SalesRepo } from '../src/modules/sales/sales.repo.js';
@@ -85,7 +86,14 @@ export class FakeSyncRepo implements SyncRepo {
     private readonly devices: FakeDevicesRepo,
     private readonly catalog: FakeCatalogRepo,
     readonly sales: FakeSalesRepo,
+    private readonly staff: FakeStaffRepo,
   ) {}
+
+  async staffSince(b: string, since: Date | null) {
+    return this.staff.rows
+      .filter((r) => r.branchId === b && (since ? r.updatedAt > since : r.active))
+      .map(({ id, name, role, pinHash, active }) => ({ id, name, role, pinHash, active }));
+  }
 
   async insertEvents(ctx: DeviceContext, list: SyncEvent[]) {
     const fresh: SyncEvent[] = [];
@@ -235,6 +243,33 @@ export class FakeAuthRepo implements AuthRepo {
   }
 }
 
+export class FakeStaffRepo implements StaffRepo {
+  rows: (StaffRecord & { updatedAt: Date })[] = [];
+  constructor(private readonly devices: FakeDevicesRepo) {}
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  private strip({ updatedAt: _u, ...r }: StaffRecord & { updatedAt: Date }): StaffRecord {
+    return r;
+  }
+  async list(b: string) {
+    return this.rows.filter((r) => r.branchId === b).map((r) => this.strip(r));
+  }
+  async find(id: string) {
+    const r = this.rows.find((x) => x.id === id);
+    return r ? this.strip(r) : null;
+  }
+  async insert(s: StaffRecord, now: Date) {
+    this.rows.push({ ...s, updatedAt: now });
+  }
+  async update(id: string, changes: Partial<StaffRecord>, now: Date) {
+    const r = this.rows.find((x) => x.id === id);
+    if (!r) return null;
+    Object.assign(r, changes, { updatedAt: now });
+    return this.strip(r);
+  }
+}
+
 /** In-memory sales tables, filled by the projection like the real ones. */
 export class FakeSalesRepo implements SalesRepo {
   orders: (Omit<SalesOrderRecord, 'deviceCode'> & { deviceId: string })[] = [];
@@ -319,9 +354,10 @@ export function fakeRepos() {
   const devices = new FakeDevicesRepo(auth);
   const catalog = new FakeCatalogRepo(devices);
   const sales = new FakeSalesRepo(devices);
-  const sync = new FakeSyncRepo(devices, catalog, sales);
-  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sales, sync };
-  return { repos, devices, sync, auth, catalog, sales };
+  const staff = new FakeStaffRepo(devices);
+  const sync = new FakeSyncRepo(devices, catalog, sales, staff);
+  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, sales, staff, sync };
+  return { repos, devices, sync, auth, catalog, sales, staff };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

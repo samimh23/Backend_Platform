@@ -48,6 +48,8 @@ pnpm test
 | PATCH / DELETE | `/v1/owner/categories/:id` | owner | Edit / delete (refused with `CATEGORY_NOT_EMPTY` while it has products) |
 | POST | `/v1/owner/branches/:branchId/products` | owner | `{ categoryId, name, price (millimes), vatRateBp?, station?, modifierGroups?, available? }` |
 | PATCH / DELETE | `/v1/owner/products/:id` | owner | Edit price, availability, options… / delete |
+| GET / POST | `/v1/owner/branches/:branchId/staff` | owner (create: role owner) | Staff who log in on the POS: `{ name, role, pin }` (4–6 digits) |
+| PATCH | `/v1/owner/staff/:id` | owner (role owner) | Rename, change role or PIN, deactivate |
 | GET | `/v1/owner/branches/:branchId/sales/summary?date=` | owner | Day totals: revenue, tickets, average, by payment, by hour, top 5 products, VAT |
 | GET | `/v1/owner/branches/:branchId/sales/orders?date=&status=&limit=` | owner | Tickets of the day, newest first |
 | GET | `/v1/owner/orders/:orderId` | owner | Ticket detail: lines (incl. removed ones), payments, VAT |
@@ -77,6 +79,11 @@ Owner auth header: `Authorization: Bearer <accessToken>` (valid 15 min; renew wi
 - Pull cursor = server time when the query started → nothing is missed between pulls.
 - Menu deletions are soft (`deleted_at`): the next pull returns the row with `deleted: true` so the POS removes it.
 - Every menu change sets `updated_at = now()` — that's how the POS sees it.
+
+### Staff PIN
+- The POS checks PINs **offline**: sync pull sends each active staff member with a PBKDF2-SHA256 hash
+  (`pbkdf2-sha256$iterations$salt$hash`, salted per person), never the PIN. Same test vector in the Dart POS.
+- Deactivated staff are sent with `active: false` on the next pull so the POS removes them.
 
 ### Sales
 - The `events` table is the source of truth. `sales_orders`, `sales_order_lines`, `sales_payments`

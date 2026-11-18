@@ -18,6 +18,9 @@ import { HealthService, type HealthRepo } from './modules/health/health.service.
 import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
 import { salesRoutes } from './modules/sales/sales.routes.js';
 import { SalesService } from './modules/sales/sales.service.js';
+import { DrizzleStaffRepo, type StaffRepo } from './modules/staff/staff.repo.js';
+import { staffRoutes } from './modules/staff/staff.routes.js';
+import { StaffService } from './modules/staff/staff.service.js';
 import { DrizzleSyncRepo, type SyncRepo } from './modules/sync/sync.repo.js';
 import { syncRoutes } from './modules/sync/sync.routes.js';
 import { SyncService } from './modules/sync/sync.service.js';
@@ -32,6 +35,7 @@ export interface Services {
   catalog: CatalogService;
   devices: DevicesService;
   sales: SalesService;
+  staff: StaffService;
   sync: SyncService;
 }
 
@@ -56,6 +60,7 @@ export interface Repos {
   catalog: CatalogRepo;
   devices: DevicesRepo;
   sales: SalesRepo;
+  staff: StaffRepo;
   sync: SyncRepo;
 }
 
@@ -66,6 +71,7 @@ export function reposFromDb(db: Db): Repos {
     catalog: new DrizzleCatalogRepo(db),
     devices: new DrizzleDevicesRepo(db),
     sales: new DrizzleSalesRepo(db),
+    staff: new DrizzleStaffRepo(db),
     sync: new DrizzleSyncRepo(db),
   };
 }
@@ -95,6 +101,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     catalog: new CatalogService(repos.catalog),
     devices: new DevicesService(repos.devices),
     sales: new SalesService(repos.sales),
+    staff: new StaffService(repos.staff),
     sync: new SyncService(repos.sync),
   };
   app.decorate('services', services);
@@ -126,6 +133,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(ownerDevicesRoutes);
   await app.register(catalogRoutes);
   await app.register(salesRoutes);
+  await app.register(staffRoutes);
   await app.register(syncRoutes);
 
   return app;

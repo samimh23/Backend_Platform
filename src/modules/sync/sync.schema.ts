@@ -68,10 +68,21 @@ const Product = Type.Object({
   deleted: Type.Boolean(),
 });
 
+const StaffMember = Type.Object({
+  id: Type.String(),
+  name: Type.String(),
+  role: Type.String(),
+  /** PBKDF2 hash so the POS can check the PIN offline. Never the PIN. */
+  pinHash: Type.String(),
+  /** false = deactivated by the owner → the POS removes this person. */
+  active: Type.Boolean(),
+});
+
 export const PullResult = Type.Object({
   /** Send this back as ?cursor= next time. */
   cursor: Type.String(),
   categories: Type.Array(Category),
   products: Type.Array(Product),
+  staff: Type.Array(StaffMember),
 });
 export type PullResult = Static<typeof PullResult>;
