@@ -39,8 +39,13 @@ export interface DeviceSummary {
   disabled: boolean;
   lastSeq: number;
   lastSeenAt: Date | null;
+  canTakePayments: boolean;
+  lanAddresses: string[];
+  lanPort: number | null;
   createdAt: Date;
 }
+
+export type DeviceChanges = { name?: string; disabled?: boolean; canTakePayments?: boolean };
 
 export interface PairingCodeRecord {
   code: string;
@@ -66,7 +71,12 @@ export interface DevicesRepo {
   listActivePairingCodes(branchId: string, now: Date): Promise<PairingCodeRecord[]>;
   listDevices(branchId: string): Promise<DeviceSummary[]>;
   findDevice(id: string): Promise<(DeviceSummary & { tenantId: string }) | null>;
-  updateDevice(id: string, changes: { name?: string; disabled?: boolean }): Promise<DeviceSummary | null>;
+  updateDevice(id: string, changes: DeviceChanges): Promise<DeviceSummary | null>;
+
+  // ── Café local network (Hub) ──
+  setLan(deviceId: string, addresses: string[], port: number): Promise<void>;
+  /** The branch's LAN key; stores [candidate] first if there is none yet (race-safe). */
+  ensureLanKey(branchId: string, candidate: string): Promise<string>;
 }
 
 const summaryColumns = {
@@ -78,6 +88,9 @@ const summaryColumns = {
   disabled: devices.disabled,
   lastSeq: devices.lastSeq,
   lastSeenAt: devices.lastSeenAt,
+  canTakePayments: devices.canTakePayments,
+  lanAddresses: devices.lanAddresses,
+  lanPort: devices.lanPort,
   createdAt: devices.createdAt,
 };
 
@@ -156,8 +169,18 @@ export class DrizzleDevicesRepo implements DevicesRepo {
     return d ?? null;
   }
 
-  async updateDevice(id: string, changes: { name?: string; disabled?: boolean }) {
+  async updateDevice(id: string, changes: DeviceChanges) {
     const [d] = await this.db.update(devices).set(changes).where(eq(devices.id, id)).returning(summaryColumns);
     return d ?? null;
+  }
+
+  async setLan(deviceId: string, addresses: string[], port: number) {
+    await this.db.update(devices).set({ lanAddresses: addresses, lanPort: port }).where(eq(devices.id, deviceId));
+  }
+
+  async ensureLanKey(branchId: string, candidate: string) {
+    await this.db.update(branches).set({ lanKey: candidate }).where(and(eq(branches.id, branchId), isNull(branches.lanKey)));
+    const [b] = await this.db.select({ lanKey: branches.lanKey }).from(branches).where(eq(branches.id, branchId));
+    return b?.lanKey ?? candidate;
   }
 }

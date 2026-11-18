@@ -34,6 +34,11 @@ export const branches = pgTable('branches', {
   name: text('name').notNull(),
   type: text('type', { enum: ['cafe', 'restaurant', 'retail'] }).notNull().default('cafe'),
   address: text('address'),
+  /**
+   * Shared secret of the café's local network: POS devices sign their requests to the
+   * Hub with it (HMAC), so a customer on the café Wi-Fi can't send orders. Created on first use.
+   */
+  lanKey: text('lan_key'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -110,6 +115,11 @@ export const devices = pgTable(
     /** Highest deviceSeq received — used to detect missing events. */
     lastSeq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /** Secondary POS may take payments only if the owner allows it (the Hub always can). */
+    canTakePayments: boolean('can_take_payments').notNull().default(false),
+    /** Hub only: its addresses on the café network (["192.168.1.20"]) + port, reported by the Hub. */
+    lanAddresses: jsonb('lan_addresses').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    lanPort: integer('lan_port'),
     createdAt: createdAt(),
   },
   (t) => [index('devices_branch_idx').on(t.branchId)],

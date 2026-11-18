@@ -42,7 +42,7 @@ pnpm test
 | POST | `/v1/owner/branches/:branchId/pairing-codes` | owner (role owner) | New one-time code `{ role: hub\|pos }`, valid 15 min |
 | GET | `/v1/owner/branches/:branchId/pairing-codes` | owner | Unused, not expired codes |
 | GET | `/v1/owner/branches/:branchId/devices` | owner | Devices with `online` (synced < 60 s), last seen, events received |
-| PATCH | `/v1/owner/devices/:deviceId` | owner (role owner) | Rename, disable (POS locked on next sync) or re-enable |
+| PATCH | `/v1/owner/devices/:deviceId` | owner (role owner) | Rename, disable (POS locked on next sync), re-enable, allow payments (`canTakePayments`) |
 | GET | `/v1/owner/branches/:branchId/menu` | owner | Categories + products (not deleted) |
 | POST | `/v1/owner/branches/:branchId/categories` | owner | `{ name, color?, sortOrder? }` |
 | PATCH / DELETE | `/v1/owner/categories/:id` | owner | Edit / delete (refused with `CATEGORY_NOT_EMPTY` while it has products) |
@@ -60,6 +60,8 @@ pnpm test
 | GET | `/v1/owner/orders/:orderId` | owner | Ticket detail: lines (incl. removed ones), payments, VAT |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
+| POST | `/v1/devices/me/lan` | device | Hub reports its café-network address `{ addresses: ["192.168.1.20"], port }` (private IPs only) |
+| GET | `/v1/devices/lan` | device | Hub address, LAN key (signs requests between POS), devices and who may take payments |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
 | GET | `/v1/sync/pull?cursor=` | device | Menu, staff (PIN hashes, deactivations), rooms and tables changed since cursor |
 

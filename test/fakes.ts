@@ -17,7 +17,15 @@ import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 export const tenantId = v7();
 export const branchId = v7();
 
-type FakeDevice = NewDevice & { disabled: boolean; lastSeq: number; lastSeenAt: Date | null; createdAt: Date };
+type FakeDevice = NewDevice & {
+  disabled: boolean;
+  lastSeq: number;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+  canTakePayments: boolean;
+  lanAddresses: string[];
+  lanPort: number | null;
+};
 type FakeCode = { role: PairingContext['role']; used: boolean; expired?: boolean; branchId?: string; expiresAt?: Date };
 
 export class FakeDevicesRepo implements DevicesRepo {
@@ -38,7 +46,16 @@ export class FakeDevicesRepo implements DevicesRepo {
     const b = c.branchId ?? branchId;
     const t = (await this.branchTenant(b)) ?? tenantId;
     const d = build({ tenantId: t, branchId: b, role: c.role, deviceNumber: this.devices.filter((x) => x.branchId === b).length + 1 });
-    this.devices.push({ ...d, disabled: false, lastSeq: 0, lastSeenAt: null, createdAt: new Date() });
+    this.devices.push({
+      ...d,
+      disabled: false,
+      lastSeq: 0,
+      lastSeenAt: null,
+      createdAt: new Date(),
+      canTakePayments: false,
+      lanAddresses: [],
+      lanPort: null,
+    });
     return d;
   }
 
@@ -58,8 +75,8 @@ export class FakeDevicesRepo implements DevicesRepo {
   }
 
   private summary(d: FakeDevice): DeviceSummary {
-    const { id, branchId: b, code, name, role, disabled, lastSeq, lastSeenAt, createdAt } = d;
-    return { id, branchId: b, code, name, role, disabled, lastSeq, lastSeenAt, createdAt };
+    const { tenantId: _t, publicKey: _p, tokenHash: _h, ...summary } = d;
+    return summary;
   }
 
   async listDevices(id: string) {
@@ -71,7 +88,17 @@ export class FakeDevicesRepo implements DevicesRepo {
     return d ? { ...this.summary(d), tenantId: d.tenantId } : null;
   }
 
-  async updateDevice(id: string, changes: { name?: string; disabled?: boolean }) {
+  lanKeys = new Map<string, string>();
+  async setLan(deviceId: string, addresses: string[], port: number) {
+    const d = this.devices.find((x) => x.id === deviceId);
+    if (d) Object.assign(d, { lanAddresses: addresses, lanPort: port });
+  }
+  async ensureLanKey(b: string, candidate: string) {
+    if (!this.lanKeys.has(b)) this.lanKeys.set(b, candidate);
+    return this.lanKeys.get(b)!;
+  }
+
+  async updateDevice(id: string, changes: { name?: string; disabled?: boolean; canTakePayments?: boolean }) {
     const d = this.devices.find((x) => x.id === id);
     if (!d) return null;
     Object.assign(d, changes);

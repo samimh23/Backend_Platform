@@ -4,7 +4,7 @@ import { newId } from '../../shared/ids.js';
 import type { DeviceRole } from '../../db/schema.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { DeviceSummary, DevicesRepo } from './devices.repo.js';
-import type { DeviceView, PairBody, PairResult, PairingCodeView } from './devices.schema.js';
+import type { DeviceView, LanInfo, LanReportBody, PairBody, PairResult, PairingCodeView } from './devices.schema.js';
 
 /** Who is calling, once a device token is verified. Passed to every device endpoint. */
 export interface DeviceContext {
@@ -110,8 +110,12 @@ export class DevicesService {
     return (await this.repo.listDevices(branchId)).map((d) => this.view(d));
   }
 
-  /** Rename, disable (locks the POS on its next sync) or re-enable a device. */
-  async updateDevice(owner: OwnerContext, deviceId: string, changes: { name?: string; disabled?: boolean }): Promise<DeviceView> {
+  /** Rename, disable (locks the POS on its next sync), re-enable, or allow payments on a secondary POS. */
+  async updateDevice(
+    owner: OwnerContext,
+    deviceId: string,
+    changes: { name?: string; disabled?: boolean; canTakePayments?: boolean },
+  ): Promise<DeviceView> {
     assertOwnerRole(owner);
     const device = await this.repo.findDevice(deviceId);
     // Another tenant's device looks exactly like a missing one — no information leak.
@@ -120,9 +124,38 @@ export class DevicesService {
     const updated = await this.repo.updateDevice(deviceId, {
       ...(changes.name !== undefined && { name: changes.name.trim() }),
       ...(changes.disabled !== undefined && { disabled: changes.disabled }),
+      ...(changes.canTakePayments !== undefined && { canTakePayments: changes.canTakePayments }),
     });
     if (!updated) throw DeviceErrors.deviceNotFound();
     return this.view(updated);
+  }
+
+  // ── Café local network ───────────────────────────────────
+
+  /** Only private addresses are kept: the Hub must never be advertised on the internet. */
+  async reportLan(ctx: DeviceContext, body: LanReportBody): Promise<void> {
+    const addresses = [...new Set(body.addresses.filter(isPrivateIpv4))];
+    await this.repo.setLan(ctx.deviceId, addresses, body.port);
+  }
+
+  async lanInfo(ctx: DeviceContext): Promise<LanInfo> {
+    const [lanKey, list] = await Promise.all([
+      this.repo.ensureLanKey(ctx.branchId, newToken()),
+      this.repo.listDevices(ctx.branchId),
+    ]);
+    const hub = list.find((d) => d.role === 'hub' && !d.disabled);
+    return {
+      lanKey,
+      hub: hub ? { deviceId: hub.id, code: hub.code, addresses: hub.lanAddresses, port: hub.lanPort } : null,
+      devices: list.map((d) => ({
+        id: d.id,
+        code: d.code,
+        name: d.name,
+        role: d.role,
+        canTakePayments: d.role === 'hub' || d.canTakePayments,
+        disabled: d.disabled,
+      })),
+    };
   }
 
   private async assertBranch(owner: OwnerContext, branchId: string) {
@@ -142,6 +175,16 @@ export class DevicesService {
       lastSeenAt: d.lastSeenAt?.toISOString() ?? null,
       lastSeq: d.lastSeq,
       pairedAt: d.createdAt.toISOString(),
+      canTakePayments: d.role === 'hub' || d.canTakePayments,
+      lanAddress: d.role === 'hub' && d.lanAddresses[0] && d.lanPort ? `${d.lanAddresses[0]}:${d.lanPort}` : null,
     };
   }
+}
+
+/** 10.x, 172.16–31.x, 192.168.x — addresses that only exist inside a local network. */
+export function isPrivateIpv4(ip: string): boolean {
+  const p = ip.split('.').map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = p as [number, number, number, number];
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }

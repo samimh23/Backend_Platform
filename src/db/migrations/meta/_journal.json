@@ -50,6 +50,13 @@
       "when": 1795027791986,
       "tag": "0006_lowly_silhouette",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795035824659,
+      "tag": "0007_acoustic_echo",
+      "breakpoints": true
     }
   ]
 }
