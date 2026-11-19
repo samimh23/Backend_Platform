@@ -46,6 +46,11 @@ export class FakeDevicesRepo implements DevicesRepo {
     const b = c.branchId ?? branchId;
     const t = (await this.branchTenant(b)) ?? tenantId;
     const d = build({ tenantId: t, branchId: b, role: c.role, deviceNumber: this.devices.filter((x) => x.branchId === b).length + 1 });
+    if (d.role === 'hub') {
+      for (const old of this.devices.filter((x) => x.branchId === b && x.role === 'hub')) {
+        Object.assign(old, { role: 'pos', canTakePayments: true, lanAddresses: [], lanPort: null });
+      }
+    }
     this.devices.push({
       ...d,
       disabled: false,

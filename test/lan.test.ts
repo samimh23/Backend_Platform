@@ -57,6 +57,23 @@ describe('café local network (Hub)', () => {
     ]);
   });
 
+  it('a new main POS replaces the old one: the old one becomes a secondary POS that can still take payments', async () => {
+    await deviceReq(hub.token, 'POST', '/v1/devices/me/lan', { addresses: ['192.168.1.20'], port: 7700 });
+    const newHub = await pair('hub', 'Nouveau PC');
+
+    const info = (await deviceReq(tablet.token, 'GET', '/v1/devices/lan')).json();
+    expect(info.hub).toEqual({ deviceId: newHub.deviceId, code: 'T3', addresses: [], port: null });
+    expect(info.devices.find((d: { id: string }) => d.id === hub.deviceId)).toMatchObject({ role: 'pos', canTakePayments: true });
+    expect(info.devices.filter((d: { role: string }) => d.role === 'hub')).toHaveLength(1);
+
+    const list = (await ownerReq('GET', `/v1/owner/branches/${owner.branchId}/devices`)).json();
+    expect(list.map((d: { code: string; role: string; lanAddress: string | null }) => [d.code, d.role, d.lanAddress])).toEqual([
+      ['T1', 'pos', null],
+      ['T2', 'pos', null],
+      ['T3', 'hub', null],
+    ]);
+  });
+
   it('the LAN key is the same for every device of the café, and stays the same', async () => {
     const a = (await deviceReq(hub.token, 'GET', '/v1/devices/lan')).json().lanKey;
     const b = (await deviceReq(tablet.token, 'GET', '/v1/devices/lan')).json().lanKey;

@@ -135,6 +135,14 @@ export class DrizzleDevicesRepo implements DevicesRepo {
         role: pc.role,
         deviceNumber: (c?.n ?? 0) + 1,
       });
+      // One main POS per café: pairing a new one turns the previous one into a
+      // secondary POS (it keeps taking payments: it still has its cash drawer).
+      if (device.role === 'hub') {
+        await tx
+          .update(devices)
+          .set({ role: 'pos', canTakePayments: true, lanAddresses: [], lanPort: null })
+          .where(and(eq(devices.branchId, device.branchId), eq(devices.role, 'hub')));
+      }
       await tx.insert(devices).values(device);
       return device;
     });
