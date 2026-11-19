@@ -356,3 +356,55 @@ export const diningTables = pgTable(
   },
   (t) => [index('dining_tables_branch_updated_idx').on(t.branchId, t.updatedAt)],
 );
+
+// ── Cash sessions (opening float → movements → closing count), from POS events ──
+
+/** One cash drawer's day: opened with a float, closed with a count. Per drawer (POS that takes payments). */
+export const cashSessions = pgTable(
+  'cash_sessions',
+  {
+    /** Same id as on the POS (event entityId). */
+    id: uuid('id').primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    /** POS that recorded the events (the main POS for every drawer of the café). */
+    deviceId: uuid('device_id').notNull(),
+    /** The POS whose cash drawer this is. */
+    drawerDeviceId: uuid('drawer_device_id').notNull(),
+    /** open | closed */
+    status: text('status', { enum: ['open', 'closed'] }).notNull().default('open'),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    openedBy: uuid('opened_by'),
+    openingFloat: money('opening_float').notNull().default(0),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    closedBy: uuid('closed_by'),
+    /** All amounts in millimes, as computed by the POS at closing. */
+    countedCash: money('counted_cash'),
+    expectedCash: money('expected_cash'),
+    /** counted − expected: negative = cash missing. */
+    difference: money('difference'),
+    cashSales: money('cash_sales').notNull().default(0),
+    cardSales: money('card_sales').notNull().default(0),
+    cashIn: money('cash_in').notNull().default(0),
+    cashOut: money('cash_out').notNull().default(0),
+    ticketCount: integer('ticket_count').notNull().default(0),
+    note: text('note'),
+  },
+  (t) => [index('cash_sessions_branch_opened_idx').on(t.branchId, t.openedAt)],
+);
+
+/** Cash put in or taken out of a drawer during a session ("paid the bread supplier"). */
+export const cashMovements = pgTable(
+  'cash_movements',
+  {
+    id: uuid('id').primaryKey(),
+    sessionId: uuid('session_id').notNull(),
+    /** in | out */
+    type: text('type', { enum: ['in', 'out'] }).notNull(),
+    amount: money('amount').notNull(),
+    reason: text('reason').notNull(),
+    staffId: uuid('staff_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('cash_movements_session_idx').on(t.sessionId)],
+);

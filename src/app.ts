@@ -5,6 +5,9 @@ import type { Db } from './db/client.js';
 import { DrizzleAuthRepo, type AuthRepo } from './modules/auth/auth.repo.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { AuthService, type OwnerContext } from './modules/auth/auth.service.js';
+import { DrizzleCashRepo, type CashRepo } from './modules/cash/cash.repo.js';
+import { cashRoutes } from './modules/cash/cash.routes.js';
+import { CashService } from './modules/cash/cash.service.js';
 import { DrizzleCatalogRepo, type CatalogRepo } from './modules/catalog/catalog.repo.js';
 import { catalogRoutes } from './modules/catalog/catalog.routes.js';
 import { CatalogService } from './modules/catalog/catalog.service.js';
@@ -35,6 +38,7 @@ import { TokenService } from './shared/tokens.js';
 export interface Services {
   health: HealthService;
   auth: AuthService;
+  cash: CashService;
   catalog: CatalogService;
   devices: DevicesService;
   floor: FloorService;
@@ -61,6 +65,7 @@ declare module 'fastify' {
 export interface Repos {
   health: HealthRepo;
   auth: AuthRepo;
+  cash: CashRepo;
   catalog: CatalogRepo;
   devices: DevicesRepo;
   floor: FloorRepo;
@@ -73,6 +78,7 @@ export function reposFromDb(db: Db): Repos {
   return {
     health: new DrizzleHealthRepo(db),
     auth: new DrizzleAuthRepo(db),
+    cash: new DrizzleCashRepo(db),
     catalog: new DrizzleCatalogRepo(db),
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
@@ -104,6 +110,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   const services: Services = {
     health: new HealthService(repos.health),
     auth: new AuthService(repos.auth, passwordHasher ?? new Argon2Hasher(), tokens, auth.refreshTtlDays),
+    cash: new CashService(repos.cash),
     catalog: new CatalogService(repos.catalog),
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
@@ -141,6 +148,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(catalogRoutes);
   await app.register(floorRoutes);
   await app.register(salesRoutes);
+  await app.register(cashRoutes);
   await app.register(staffRoutes);
   await app.register(syncRoutes);
 

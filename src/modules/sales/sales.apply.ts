@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { salesOrderLines, salesOrders, salesPayments } from '../../db/schema.js';
+import { cashMovements, cashSessions, salesOrderLines, salesOrders, salesPayments } from '../../db/schema.js';
 import type { DeviceContext } from '../devices/devices.service.js';
 import type { ProjectionOp } from './sales.projection.js';
 
@@ -79,6 +79,36 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
 
       case 'cancelOrder':
         await tx.update(salesOrders).set({ status: 'cancelled', closedAt: op.closedAt }).where(eq(salesOrders.id, op.orderId));
+        break;
+
+      case 'openCashSession':
+        await tx
+          .insert(cashSessions)
+          .values({
+            id: op.sessionId,
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            deviceId: ctx.deviceId,
+            drawerDeviceId: op.drawerId,
+            openedAt: op.openedAt,
+            openedBy: op.staffId,
+            openingFloat: op.openingFloat,
+          })
+          .onConflictDoNothing();
+        break;
+
+      case 'cashMovement':
+        await tx
+          .insert(cashMovements)
+          .values({ ...op.movement, sessionId: op.sessionId })
+          .onConflictDoNothing();
+        break;
+
+      case 'closeCashSession':
+        await tx
+          .update(cashSessions)
+          .set({ status: 'closed', closedAt: op.closedAt, closedBy: op.staffId, note: op.note, ...op.totals })
+          .where(eq(cashSessions.id, op.sessionId));
         break;
     }
   }

@@ -58,6 +58,8 @@ pnpm test
 | GET | `/v1/owner/branches/:branchId/sales/summary?date=` | owner | Day totals: revenue, tickets, average, by payment, by hour, top 5 products, VAT |
 | GET | `/v1/owner/branches/:branchId/sales/orders?date=&status=&limit=` | owner | Tickets of the day, newest first |
 | GET | `/v1/owner/orders/:orderId` | owner | Ticket detail: lines (incl. removed ones), payments, VAT |
+| GET | `/v1/owner/branches/:branchId/cash-sessions?date=&limit=` | owner | Cash drawer sessions (Clôtures): float, cash/card sales, in/out, expected vs counted, gap, who opened/closed |
+| GET | `/v1/owner/cash-sessions/:sessionId` | owner | One session with its cash movements |
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/devices/me/lan` | device | Hub reports its café-network address `{ addresses: ["192.168.1.20"], port }` (private IPs only) |

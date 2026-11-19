@@ -30,7 +30,26 @@ export type ProjectionOp =
       payment: { id: string; method: string; amount: number; tendered: number; changeGiven: number; createdAt: Date };
     }
   | { kind: 'closeOrder'; orderId: string; closedAt: Date; total: number; itemCount: number; receiptNumber: string | null }
-  | { kind: 'cancelOrder'; orderId: string; closedAt: Date };
+  | { kind: 'cancelOrder'; orderId: string; closedAt: Date }
+  | { kind: 'openCashSession'; sessionId: string; drawerId: string; openingFloat: number; openedAt: Date; staffId: string | null }
+  | {
+      kind: 'cashMovement';
+      sessionId: string;
+      movement: { id: string; type: 'in' | 'out'; amount: number; reason: string; staffId: string | null; createdAt: Date };
+    }
+  | { kind: 'closeCashSession'; sessionId: string; closedAt: Date; staffId: string | null; totals: CashTotals; note: string | null };
+
+/** What the POS computed when the drawer was counted (millimes). */
+export interface CashTotals {
+  countedCash: number;
+  expectedCash: number;
+  difference: number;
+  cashSales: number;
+  cardSales: number;
+  cashIn: number;
+  cashOut: number;
+  ticketCount: number;
+}
 
 /** Table the ticket is on; the name is a snapshot (tables can be renamed later). */
 export interface TableRef {
@@ -59,6 +78,11 @@ const int = (p: Payload, k: string, fallback?: number): number => {
 };
 const optStr = (p: Payload, k: string): string | null => (typeof p[k] === 'string' ? (p[k] as string) : null);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuid = (p: Payload, k: string): string => {
+  const v = str(p, k);
+  if (!UUID.test(v)) throw new BadPayload(`payload.${k} must be a uuid`);
+  return v;
+};
 /** tableId + tableName, both or none. */
 const tableRef = (p: Payload): TableRef | null => {
   if (p.tableId === undefined || p.tableId === null) return null;
@@ -151,6 +175,55 @@ export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; probl
 
         case 'order.cancelled':
           ops.push({ kind: 'cancelOrder', orderId: e.entityId, closedAt: at });
+          break;
+
+        case 'cash_session.opened':
+          ops.push({
+            kind: 'openCashSession',
+            sessionId: e.entityId,
+            drawerId: uuid(p, 'drawerId'),
+            openingFloat: int(p, 'openingFloat'),
+            openedAt: at,
+            staffId: e.staffId ?? null,
+          });
+          break;
+
+        case 'cash.moved': {
+          const type = str(p, 'type');
+          if (type !== 'in' && type !== 'out') throw new BadPayload('payload.type must be in or out');
+          ops.push({
+            kind: 'cashMovement',
+            sessionId: e.entityId,
+            movement: {
+              id: uuid(p, 'movementId'),
+              type,
+              amount: int(p, 'amount'),
+              reason: str(p, 'reason'),
+              staffId: e.staffId ?? null,
+              createdAt: at,
+            },
+          });
+          break;
+        }
+
+        case 'cash_session.closed':
+          ops.push({
+            kind: 'closeCashSession',
+            sessionId: e.entityId,
+            closedAt: at,
+            staffId: e.staffId ?? null,
+            note: optStr(p, 'note'),
+            totals: {
+              countedCash: int(p, 'countedCash'),
+              expectedCash: int(p, 'expectedCash'),
+              difference: int(p, 'difference'),
+              cashSales: int(p, 'cashSales', 0),
+              cardSales: int(p, 'cardSales', 0),
+              cashIn: int(p, 'cashIn', 0),
+              cashOut: int(p, 'cashOut', 0),
+              ticketCount: int(p, 'ticketCount', 0),
+            },
+          });
           break;
 
         default:

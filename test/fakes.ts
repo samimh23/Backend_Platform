@@ -8,6 +8,7 @@ import type { DeviceContext } from '../src/modules/devices/devices.service.js';
 import { projectEvents, type ProjectionOp } from '../src/modules/sales/sales.projection.js';
 import type { SalesLineRecord, SalesOrderRecord, SalesPaymentRecord, SalesRepo } from '../src/modules/sales/sales.repo.js';
 import type { CatalogRepo, CategoryRecord, ProductRecord } from '../src/modules/catalog/catalog.repo.js';
+import type { CashMovementRecord, CashRepo, CashSessionRecord } from '../src/modules/cash/cash.repo.js';
 import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
@@ -379,6 +380,8 @@ export class FakeSalesRepo implements SalesRepo {
   orders: (Omit<SalesOrderRecord, 'deviceCode'> & { deviceId: string; tableId: string | null })[] = [];
   lines: SalesLineRecord[] = [];
   payments: SalesPaymentRecord[] = [];
+  cashSessions: CashSessionRecord[] = [];
+  cashMovements: CashMovementRecord[] = [];
 
   constructor(private readonly devices: FakeDevicesRepo) {}
 
@@ -427,6 +430,39 @@ export class FakeSalesRepo implements SalesRepo {
         case 'cancelOrder':
           if (order) Object.assign(order, { status: 'cancelled', closedAt: op.closedAt });
           break;
+        case 'openCashSession':
+          if (!this.cashSessions.some((s) => s.id === op.sessionId))
+            this.cashSessions.push({
+              id: op.sessionId,
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              drawerDeviceId: op.drawerId,
+              status: 'open',
+              openedAt: op.openedAt,
+              openedBy: op.staffId,
+              openingFloat: op.openingFloat,
+              closedAt: null,
+              closedBy: null,
+              countedCash: null,
+              expectedCash: null,
+              difference: null,
+              cashSales: 0,
+              cardSales: 0,
+              cashIn: 0,
+              cashOut: 0,
+              ticketCount: 0,
+              note: null,
+            });
+          break;
+        case 'cashMovement':
+          if (!this.cashMovements.some((m) => m.id === op.movement.id))
+            this.cashMovements.push({ ...op.movement, sessionId: op.sessionId });
+          break;
+        case 'closeCashSession': {
+          const s = this.cashSessions.find((x) => x.id === op.sessionId);
+          if (s) Object.assign(s, { status: 'closed', closedAt: op.closedAt, closedBy: op.staffId, note: op.note, ...op.totals });
+          break;
+        }
       }
     }
   }
@@ -458,6 +494,36 @@ export class FakeSalesRepo implements SalesRepo {
   }
 }
 
+/** Reads the cash sessions the fake sales store projected. */
+export class FakeCashRepo implements CashRepo {
+  constructor(
+    private readonly sales: FakeSalesRepo,
+    private readonly devices: FakeDevicesRepo,
+    private readonly staff: FakeStaffRepo,
+  ) {}
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  async listSessions(b: string, window: { from: Date; to: Date } | null, limit: number) {
+    return this.sales.cashSessions
+      .filter((s) => s.branchId === b && (!window || (s.openedAt >= window.from && s.openedAt < window.to)))
+      .sort((x, y) => y.openedAt.getTime() - x.openedAt.getTime() || (y.id > x.id ? 1 : -1))
+      .slice(0, limit);
+  }
+  async findSession(id: string) {
+    return this.sales.cashSessions.find((s) => s.id === id) ?? null;
+  }
+  async movements(sessionId: string) {
+    return this.sales.cashMovements.filter((m) => m.sessionId === sessionId);
+  }
+  async staffNames(ids: string[]) {
+    return new Map(this.staff.rows.filter((r) => ids.includes(r.id)).map((r) => [r.id, r.name]));
+  }
+  async deviceNames(ids: string[]) {
+    return new Map(this.devices.devices.filter((d) => ids.includes(d.id)).map((d) => [d.id, { code: d.code, name: d.name }]));
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
@@ -466,7 +532,8 @@ export function fakeRepos() {
   const staff = new FakeStaffRepo(devices);
   const floor = new FakeFloorRepo(devices);
   const sync = new FakeSyncRepo(devices, catalog, sales, staff, floor);
-  const repos: Repos = { health: { ping: async () => {} }, auth, catalog, devices, floor, sales, staff, sync };
+  const cash = new FakeCashRepo(sales, devices, staff);
+  const repos: Repos = { health: { ping: async () => {} }, auth, cash, catalog, devices, floor, sales, staff, sync };
   return { repos, devices, sync, auth, catalog, sales, staff, floor };
 }
 
