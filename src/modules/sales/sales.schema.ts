@@ -10,7 +10,9 @@ export const SummaryQuery = Type.Object({ date: Type.Optional(DateParam) });
 
 export const OrdersQuery = Type.Object({
   date: Type.Optional(DateParam),
-  status: Type.Optional(Type.Union([Type.Literal('open'), Type.Literal('paid'), Type.Literal('cancelled')])),
+  status: Type.Optional(
+    Type.Union([Type.Literal('open'), Type.Literal('paid'), Type.Literal('cancelled'), Type.Literal('refunded')]),
+  ),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
 });
 
@@ -23,6 +25,8 @@ export const SalesSummary = Type.Object({
   revenue: Type.Integer(),
   /** Discounts and free items on paid tickets ("Remises & offerts"). */
   discounts: Type.Object({ amount: Type.Integer(), lines: Type.Integer(), freeItems: Type.Integer() }),
+  /** Tickets refunded (counted out of revenue). */
+  refunds: Type.Object({ count: Type.Integer(), amount: Type.Integer() }),
   ticketCount: Type.Integer(),
   averageTicket: Type.Integer(),
   itemCount: Type.Integer(),
@@ -53,6 +57,9 @@ export const OrderView = Type.Object({
   deviceCode: Type.Union([Type.String(), Type.Null()]),
   /** Table name at sale time, null = counter / takeaway. */
   tableName: Type.Union([Type.String(), Type.Null()]),
+  /** Refunded after payment: when and why (changed_mind | error | quality | other). */
+  refundedAt: Type.Union([Type.String(), Type.Null()]),
+  refundReason: Type.Union([Type.String(), Type.Null()]),
 });
 export type OrderView = Static<typeof OrderView>;
 
@@ -75,6 +82,8 @@ export const OrderDetail = Type.Composite([
         discount: Type.Integer(),
         discountType: Type.Union([Type.String(), Type.Null()]),
         discountReason: Type.Union([Type.String(), Type.Null()]),
+        /** Removed after "Envoyer": why. */
+        voidReason: Type.Union([Type.String(), Type.Null()]),
         /** After discount. */
         total: Type.Integer(),
       }),

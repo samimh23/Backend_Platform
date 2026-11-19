@@ -122,6 +122,53 @@ describe('discounts from the POS', () => {
     expect(detail.lines[0]).toMatchObject({ discount: 0, discountType: null, discountReason: null, total: 4000 });
   });
 
+  it('refund: the ticket is "refunded", out of revenue, with the reason and the money given back', async () => {
+    const order = v7();
+    const line = v7();
+    await push([
+      ev('order.opened', order, { type: 'takeaway' }),
+      ev('order.item_added', order, { lineId: line, productId: 'p', name: 'Jus', unitPrice: 4000, qty: 1, vatRateBp: 1900, modifiers: [] }),
+      ev('payment.added', order, { paymentId: v7(), method: 'cash', amount: 4000, tendered: 5000, change: 1000 }),
+      ev('order.closed', order, { receiptNumber: 'T1-000001', total: 4000, itemCount: 1, vat: [] }),
+      ev('order.refunded', order, { reason: 'quality', receiptNumber: 'T1-000001', payments: [{ paymentId: v7(), method: 'cash', amount: -4000 }] }, manager),
+    ]);
+    expect(sync.errors).toEqual([]);
+
+    const list = await get(`/v1/owner/branches/${owner.branchId}/sales/orders?status=refunded`);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ status: 'refunded', receiptNumber: 'T1-000001', refundReason: 'quality' });
+    expect(list[0].refundedAt).not.toBeNull();
+
+    const detail = await get(`/v1/owner/orders/${order}`);
+    expect(detail.payments.map((p: { amount: number }) => p.amount)).toEqual([4000, -4000]);
+
+    const summary = await get(`/v1/owner/branches/${owner.branchId}/sales/summary`);
+    expect(summary.revenue).toBe(0);
+    expect(summary.ticketCount).toBe(0);
+    expect(summary.refunds).toEqual({ count: 1, amount: 4000 });
+  });
+
+  it('an item removed after "Envoyer" keeps why it was removed', async () => {
+    const order = v7();
+    const line = v7();
+    await push([
+      ev('order.opened', order, { type: 'takeaway' }),
+      ev('order.item_added', order, { lineId: line, productId: 'p', name: 'Crêpe', unitPrice: 5500, qty: 1, vatRateBp: 700, modifiers: [] }),
+      ev('order.item_voided', order, { lineId: line, reason: 'removed_after_send', why: 'quality' }, manager),
+    ]);
+    const detail = await get(`/v1/owner/orders/${order}`);
+    expect(detail.lines[0]).toMatchObject({ voided: true, voidReason: 'quality', total: 0 });
+  });
+
+  it('a refund with a positive amount is refused (problem, not a crash)', async () => {
+    const order = v7();
+    await push([
+      ev('order.opened', order, { type: 'takeaway' }),
+      ev('order.refunded', order, { reason: 'x', payments: [{ paymentId: v7(), method: 'cash', amount: 4000 }] }),
+    ]);
+    expect(sync.errors.map((e) => e.code)).toEqual(['PROJECTION_SKIPPED']);
+  });
+
   it('a malformed discount event is a problem, not a crash', async () => {
     const order = v7();
     await push([

@@ -6,7 +6,7 @@ export interface SalesOrderRecord {
   id: string;
   tenantId: string;
   branchId: string;
-  status: 'open' | 'paid' | 'cancelled';
+  status: 'open' | 'paid' | 'cancelled' | 'refunded';
   type: string;
   openedAt: Date;
   closedAt: Date | null;
@@ -16,6 +16,8 @@ export interface SalesOrderRecord {
   paymentMethod: string | null;
   deviceCode: string | null;
   tableName: string | null;
+  refundedAt: Date | null;
+  refundReason: string | null;
 }
 
 export interface SalesLineRecord {
@@ -32,6 +34,7 @@ export interface SalesLineRecord {
   discountType: string | null;
   discountValue: number;
   discountReason: string | null;
+  voidReason: string | null;
 }
 
 export interface SalesPaymentRecord {
@@ -72,6 +75,8 @@ const orderColumns = {
   paymentMethod: salesOrders.paymentMethod,
   deviceCode: devices.code,
   tableName: salesOrders.tableName,
+  refundedAt: salesOrders.refundedAt,
+  refundReason: salesOrders.refundReason,
 };
 
 export class DrizzleSalesRepo implements SalesRepo {

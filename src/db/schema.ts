@@ -239,8 +239,8 @@ export const salesOrders = pgTable(
     tenantId: uuid('tenant_id').notNull(),
     branchId: uuid('branch_id').notNull(),
     deviceId: uuid('device_id').notNull(),
-    /** open | paid | cancelled */
-    status: text('status', { enum: ['open', 'paid', 'cancelled'] }).notNull().default('open'),
+    /** open | paid | cancelled | refunded */
+    status: text('status', { enum: ['open', 'paid', 'cancelled', 'refunded'] }).notNull().default('open'),
     type: text('type').notNull().default('takeaway'),
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
@@ -253,6 +253,10 @@ export const salesOrders = pgTable(
     /** Table the ticket is on (null = counter / takeaway). Name is a snapshot. */
     tableId: uuid('table_id'),
     tableName: text('table_name'),
+    /** Refunded after payment: when, why, which manager approved. */
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    refundReason: text('refund_reason'),
+    refundApprovedBy: uuid('refund_approved_by'),
   },
   (t) => [
     index('sales_orders_branch_closed_idx').on(t.branchId, t.closedAt),
@@ -282,6 +286,9 @@ export const salesOrderLines = pgTable(
     discountReason: text('discount_reason'),
     /** Manager who approved it (staff id). */
     discountApprovedBy: uuid('discount_approved_by'),
+    /** Removed after being sent to the bar/kitchen: why, and which manager approved. */
+    voidReason: text('void_reason'),
+    voidApprovedBy: uuid('void_approved_by'),
   },
   (t) => [index('sales_order_lines_order_idx').on(t.orderId)],
 );

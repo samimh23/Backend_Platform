@@ -79,6 +79,10 @@ export class SalesService {
       averageTicket: paid.length ? roundDiv(revenue, paid.length) : 0,
       itemCount: paid.reduce((s, o) => s + o.itemCount, 0),
       cancelledCount: orders.filter((o) => o.status === 'cancelled').length,
+      refunds: {
+        count: orders.filter((o) => o.status === 'refunded').length,
+        amount: orders.filter((o) => o.status === 'refunded').reduce((s, o) => s + o.total, 0),
+      },
       openCount: orders.filter((o) => o.status === 'open').length,
       byPaymentMethod: [...byMethod.entries()].map(([method, v]) => ({ method, ...v })).sort((a, b) => b.amount - a.amount),
       byHour: [...byHour.entries()].map(([hour, v]) => ({ hour, ...v })).sort((a, b) => a.hour - b.hour),
@@ -91,7 +95,7 @@ export class SalesService {
   async listOrders(
     owner: OwnerContext,
     branchId: string,
-    query: { date?: string; status?: 'open' | 'paid' | 'cancelled'; limit?: number },
+    query: { date?: string; status?: 'open' | 'paid' | 'cancelled' | 'refunded'; limit?: number },
   ): Promise<OrderView[]> {
     await this.assertBranch(owner, branchId);
     const { from, to } = dayRange(query.date ?? todayInTunis(this.now()));
@@ -123,6 +127,7 @@ export class SalesService {
         discount: lineDiscount(l),
         discountType: l.discountType,
         discountReason: l.discountReason,
+        voidReason: l.voidReason,
         total: lineTotal(l),
       })),
       payments: payments.map(({ method, amount, tendered, changeGiven }) => ({ method, amount, tendered, changeGiven })),
@@ -148,5 +153,7 @@ function orderView(o: SalesOrderRecord): OrderView {
     paymentMethod: o.paymentMethod,
     deviceCode: o.deviceCode,
     tableName: o.tableName,
+    refundedAt: o.refundedAt?.toISOString() ?? null,
+    refundReason: o.refundReason,
   };
 }

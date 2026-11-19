@@ -23,7 +23,15 @@ export type ProjectionOp =
       };
     }
   | { kind: 'setLineQty'; lineId: string; qty: number }
-  | { kind: 'voidLine'; lineId: string }
+  | { kind: 'voidLine'; lineId: string; why: string | null; approvedBy: string | null }
+  | {
+      kind: 'refundOrder';
+      orderId: string;
+      refundedAt: Date;
+      reason: string | null;
+      approvedBy: string | null;
+      payments: { id: string; method: string; amount: number }[];
+    }
   | {
       kind: 'discountLines';
       reason: string | null;
@@ -150,8 +158,27 @@ export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; probl
           break;
 
         case 'order.item_voided':
-          ops.push({ kind: 'voidLine', lineId: str(p, 'lineId') });
+          ops.push({ kind: 'voidLine', lineId: str(p, 'lineId'), why: optStr(p, 'why'), approvedBy: e.approvedBy ?? null });
           break;
+
+        case 'order.refunded': {
+          // Paid ticket given back: negative payments, the ticket becomes "refunded".
+          if (!Array.isArray(p.payments)) throw new BadPayload('payload.payments must be an array');
+          const payments = (p.payments as Payload[]).map((x) => {
+            const amount = int(x, 'amount');
+            if (amount > 0) throw new BadPayload('a refund payment must be negative');
+            return { id: uuid(x, 'paymentId'), method: str(x, 'method'), amount };
+          });
+          ops.push({
+            kind: 'refundOrder',
+            orderId: e.entityId,
+            refundedAt: at,
+            reason: optStr(p, 'reason'),
+            approvedBy: e.approvedBy ?? null,
+            payments,
+          });
+          break;
+        }
 
         case 'order.item_discounted': {
           // One or several lines (a whole-ticket discount is sent line by line). type null = removed.

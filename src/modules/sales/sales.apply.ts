@@ -46,7 +46,23 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
         break;
 
       case 'voidLine':
-        await tx.update(salesOrderLines).set({ voided: true }).where(eq(salesOrderLines.id, op.lineId));
+        await tx
+          .update(salesOrderLines)
+          .set({ voided: true, voidReason: op.why, voidApprovedBy: op.approvedBy })
+          .where(eq(salesOrderLines.id, op.lineId));
+        break;
+
+      case 'refundOrder':
+        for (const p of op.payments) {
+          await tx
+            .insert(salesPayments)
+            .values({ id: p.id, orderId: op.orderId, method: p.method, amount: p.amount, createdAt: op.refundedAt })
+            .onConflictDoNothing();
+        }
+        await tx
+          .update(salesOrders)
+          .set({ status: 'refunded', refundedAt: op.refundedAt, refundReason: op.reason, refundApprovedBy: op.approvedBy })
+          .where(eq(salesOrders.id, op.orderId));
         break;
 
       case 'discountLines':

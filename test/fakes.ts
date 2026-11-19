@@ -407,6 +407,8 @@ export class FakeSalesRepo implements SalesRepo {
               paymentMethod: null,
               tableId: op.table?.id ?? null,
               tableName: op.table?.name ?? null,
+              refundedAt: null,
+              refundReason: null,
             });
           break;
         case 'moveTable':
@@ -414,13 +416,20 @@ export class FakeSalesRepo implements SalesRepo {
           break;
         case 'addLine':
           if (!this.lines.some((l) => l.id === op.line.id))
-            this.lines.push({ ...op.line, orderId: op.orderId, voided: false, discountType: null, discountValue: 0, discountReason: null });
+            this.lines.push({ ...op.line, orderId: op.orderId, voided: false, discountType: null, discountValue: 0, discountReason: null, voidReason: null });
           break;
         case 'setLineQty':
           for (const l of this.lines) if (l.id === op.lineId) l.qty = op.qty;
           break;
         case 'voidLine':
-          for (const l of this.lines) if (l.id === op.lineId) l.voided = true;
+          for (const l of this.lines) if (l.id === op.lineId) Object.assign(l, { voided: true, voidReason: op.why });
+          break;
+        case 'refundOrder':
+          for (const p of op.payments) {
+            if (!this.payments.some((x) => (x as { id?: string }).id === p.id))
+              this.payments.push({ id: p.id, orderId: op.orderId, method: p.method, amount: p.amount, tendered: 0, changeGiven: 0 } as SalesPaymentRecord);
+          }
+          if (order) Object.assign(order, { status: 'refunded', refundedAt: op.refundedAt, refundReason: op.reason });
           break;
         case 'discountLines':
           for (const d of op.lines) {
