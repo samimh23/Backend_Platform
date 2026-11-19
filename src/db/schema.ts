@@ -274,6 +274,14 @@ export const salesOrderLines = pgTable(
     qty: integer('qty').notNull(),
     vatRateBp: integer('vat_rate_bp').notNull(),
     voided: boolean('voided').notNull().default(false),
+    /** Discount on this line: free | percent | amount (null = none). See shared/money discountOf. */
+    discountType: text('discount_type'),
+    /** Basis points for percent, millimes for amount. */
+    discountValue: integer('discount_value').notNull().default(0),
+    /** geste | staff | error | complaint | other */
+    discountReason: text('discount_reason'),
+    /** Manager who approved it (staff id). */
+    discountApprovedBy: uuid('discount_approved_by'),
   },
   (t) => [index('sales_order_lines_order_idx').on(t.orderId)],
 );

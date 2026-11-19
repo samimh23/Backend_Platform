@@ -25,6 +25,12 @@ export type ProjectionOp =
   | { kind: 'setLineQty'; lineId: string; qty: number }
   | { kind: 'voidLine'; lineId: string }
   | {
+      kind: 'discountLines';
+      reason: string | null;
+      approvedBy: string | null;
+      lines: { lineId: string; type: 'free' | 'percent' | 'amount' | null; value: number }[];
+    }
+  | {
       kind: 'payment';
       orderId: string;
       payment: { id: string; method: string; amount: number; tendered: number; changeGiven: number; createdAt: Date };
@@ -146,6 +152,20 @@ export function projectEvents(events: SyncEvent[]): { ops: ProjectionOp[]; probl
         case 'order.item_voided':
           ops.push({ kind: 'voidLine', lineId: str(p, 'lineId') });
           break;
+
+        case 'order.item_discounted': {
+          // One or several lines (a whole-ticket discount is sent line by line). type null = removed.
+          if (!Array.isArray(p.lines) || p.lines.length === 0) throw new BadPayload('payload.lines must be a non-empty array');
+          const lines = (p.lines as Payload[]).map((l) => {
+            const type = l.type ?? null;
+            if (type !== null && type !== 'free' && type !== 'percent' && type !== 'amount') {
+              throw new BadPayload('payload.lines[].type must be free, percent, amount or null');
+            }
+            return { lineId: str(l, 'lineId'), type: type as 'free' | 'percent' | 'amount' | null, value: int(l, 'value', 0) };
+          });
+          ops.push({ kind: 'discountLines', reason: optStr(p, 'reason'), approvedBy: e.approvedBy ?? null, lines });
+          break;
+        }
 
         case 'payment.added':
           ops.push({

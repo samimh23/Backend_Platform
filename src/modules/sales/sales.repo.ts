@@ -29,6 +29,9 @@ export interface SalesLineRecord {
   qty: number;
   vatRateBp: number;
   voided: boolean;
+  discountType: string | null;
+  discountValue: number;
+  discountReason: string | null;
 }
 
 export interface SalesPaymentRecord {

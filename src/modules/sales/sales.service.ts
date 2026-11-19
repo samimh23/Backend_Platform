@@ -1,5 +1,5 @@
 import { AppError } from '../../shared/errors.js';
-import { roundDiv, vatBreakdown } from '../../shared/money.js';
+import { discountOf, roundDiv, vatBreakdown } from '../../shared/money.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { SalesLineRecord, SalesOrderRecord, SalesRepo } from './sales.repo.js';
 import type { OrderDetail, OrderView, SalesSummary } from './sales.schema.js';
@@ -24,7 +24,10 @@ export function todayInTunis(now: Date): string {
   return new Date(now.getTime() + TUNIS_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-const lineTotal = (l: SalesLineRecord) => (l.voided ? 0 : (l.unitPrice + l.modifiersPrice) * l.qty);
+const lineGross = (l: SalesLineRecord) => (l.voided ? 0 : (l.unitPrice + l.modifiersPrice) * l.qty);
+const lineDiscount = (l: SalesLineRecord) => discountOf(lineGross(l), l.discountType, l.discountValue);
+/** What the customer pays for the line: gross − discount. */
+const lineTotal = (l: SalesLineRecord) => lineGross(l) - lineDiscount(l);
 
 export class SalesService {
   constructor(
@@ -63,9 +66,15 @@ export class SalesService {
       byProduct.set(l.productId, { ...p, qty: p.qty + l.qty, revenue: p.revenue + lineTotal(l) });
     }
 
+    const discounted = paidLines.filter((l) => l.discountType);
     return {
       date: day,
       revenue,
+      discounts: {
+        amount: discounted.reduce((s, l) => s + lineDiscount(l), 0),
+        lines: discounted.length,
+        freeItems: discounted.filter((l) => l.discountType === 'free').reduce((s, l) => s + l.qty, 0),
+      },
       ticketCount: paid.length,
       averageTicket: paid.length ? roundDiv(revenue, paid.length) : 0,
       itemCount: paid.reduce((s, o) => s + o.itemCount, 0),
@@ -111,6 +120,9 @@ export class SalesService {
         qty: l.qty,
         vatRateBp: l.vatRateBp,
         voided: l.voided,
+        discount: lineDiscount(l),
+        discountType: l.discountType,
+        discountReason: l.discountReason,
         total: lineTotal(l),
       })),
       payments: payments.map(({ method, amount, tendered, changeGiven }) => ({ method, amount, tendered, changeGiven })),

@@ -21,6 +21,8 @@ export const SalesSummary = Type.Object({
   date: Type.String(),
   /** Total of paid tickets (TTC). */
   revenue: Type.Integer(),
+  /** Discounts and free items on paid tickets ("Remises & offerts"). */
+  discounts: Type.Object({ amount: Type.Integer(), lines: Type.Integer(), freeItems: Type.Integer() }),
   ticketCount: Type.Integer(),
   averageTicket: Type.Integer(),
   itemCount: Type.Integer(),
@@ -69,6 +71,11 @@ export const OrderDetail = Type.Composite([
         vatRateBp: Type.Integer(),
         /** Removed from the ticket by the cashier (kept for control). */
         voided: Type.Boolean(),
+        /** Discount on the line (millimes), with its type and reason. */
+        discount: Type.Integer(),
+        discountType: Type.Union([Type.String(), Type.Null()]),
+        discountReason: Type.Union([Type.String(), Type.Null()]),
+        /** After discount. */
         total: Type.Integer(),
       }),
     ),

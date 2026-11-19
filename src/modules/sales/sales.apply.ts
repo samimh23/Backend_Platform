@@ -49,6 +49,20 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
         await tx.update(salesOrderLines).set({ voided: true }).where(eq(salesOrderLines.id, op.lineId));
         break;
 
+      case 'discountLines':
+        for (const l of op.lines) {
+          await tx
+            .update(salesOrderLines)
+            .set({
+              discountType: l.type,
+              discountValue: l.type ? l.value : 0,
+              discountReason: l.type ? op.reason : null,
+              discountApprovedBy: l.type ? op.approvedBy : null,
+            })
+            .where(eq(salesOrderLines.id, l.lineId));
+        }
+        break;
+
       case 'payment':
         await tx
           .insert(salesPayments)

@@ -413,13 +413,20 @@ export class FakeSalesRepo implements SalesRepo {
           if (order) Object.assign(order, { tableId: op.table?.id ?? null, tableName: op.table?.name ?? null, type: op.table ? 'table' : 'takeaway' });
           break;
         case 'addLine':
-          if (!this.lines.some((l) => l.id === op.line.id)) this.lines.push({ ...op.line, orderId: op.orderId, voided: false });
+          if (!this.lines.some((l) => l.id === op.line.id))
+            this.lines.push({ ...op.line, orderId: op.orderId, voided: false, discountType: null, discountValue: 0, discountReason: null });
           break;
         case 'setLineQty':
           for (const l of this.lines) if (l.id === op.lineId) l.qty = op.qty;
           break;
         case 'voidLine':
           for (const l of this.lines) if (l.id === op.lineId) l.voided = true;
+          break;
+        case 'discountLines':
+          for (const d of op.lines) {
+            const l = this.lines.find((x) => x.id === d.lineId);
+            if (l) Object.assign(l, { discountType: d.type, discountValue: d.type ? d.value : 0, discountReason: d.type ? op.reason : null });
+          }
           break;
         case 'payment':
           this.payments.push({ ...op.payment, orderId: op.orderId });

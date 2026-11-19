@@ -13,6 +13,26 @@ export function roundDiv(numerator: number, denominator: number): number {
   return negative ? -q : q;
 }
 
+/** free | percent (value in basis points: 1000 = 10 %) | amount (value in millimes, per line). */
+export type DiscountType = 'free' | 'percent' | 'amount';
+
+/**
+ * Discount of a line, from its gross total (price × qty). Same formula as the POS
+ * (lib/core/money/order_totals.dart, same test vectors): never more than the line.
+ */
+export function discountOf(gross: number, type: string | null | undefined, value: number): number {
+  switch (type) {
+    case 'free':
+      return gross;
+    case 'percent':
+      return Math.min(gross, roundDiv(gross * Math.max(0, Math.min(value, 10000)), 10000));
+    case 'amount':
+      return Math.min(gross, Math.max(0, value));
+    default:
+      return 0;
+  }
+}
+
 export interface VatSplit {
   rateBp: number;
   ttc: number;
