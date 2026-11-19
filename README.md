@@ -39,6 +39,7 @@ pnpm test
 | POST | `/v1/auth/refresh` | refresh token | New tokens (rotation; reusing an old one closes all sessions) |
 | POST | `/v1/auth/logout` | refresh token | Close this session |
 | GET | `/v1/auth/me` | owner | User, business, branches |
+| GET / PATCH | `/v1/owner/branches/:branchId/business` | owner (edit: role owner) | Café details printed on receipts: name, matricule fiscal, address, phone, footer |
 | POST | `/v1/owner/branches/:branchId/pairing-codes` | owner (role owner) | New one-time code `{ role: hub\|pos }`, valid 15 min |
 | GET | `/v1/owner/branches/:branchId/pairing-codes` | owner | Unused, not expired codes |
 | GET | `/v1/owner/branches/:branchId/devices` | owner | Devices with `online` (synced < 60 s), last seen, events received |
@@ -63,6 +64,7 @@ pnpm test
 | POST | `/v1/devices/pair` | pairing code | Pair a POS/Hub → returns `deviceId`, `deviceCode` (T1…), `token` (once) |
 | GET | `/v1/devices/me` | device | Check the token is valid / device not disabled |
 | POST | `/v1/devices/me/lan` | device | Hub reports its café-network address `{ addresses: ["192.168.1.20"], port }` (private IPs only) |
+| GET | `/v1/devices/business` | device | Café details for the receipt header/footer |
 | GET | `/v1/devices/lan` | device | Hub address, LAN key (signs requests between POS), devices and who may take payments |
 | POST | `/v1/sync/push` | device | Send up to 500 events (idempotent, gaps recorded) |
 | GET | `/v1/sync/pull?cursor=` | device | Menu, staff (PIN hashes, deactivations), rooms and tables changed since cursor |

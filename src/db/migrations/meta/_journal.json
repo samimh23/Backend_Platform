@@ -64,6 +64,13 @@
       "when": 1795115522668,
       "tag": "0008_adorable_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795117713058,
+      "tag": "0009_glorious_masque",
+      "breakpoints": true
     }
   ]
 }

@@ -34,6 +34,10 @@ export const branches = pgTable('branches', {
   name: text('name').notNull(),
   type: text('type', { enum: ['cafe', 'restaurant', 'retail'] }).notNull().default('cafe'),
   address: text('address'),
+  /** Printed on receipts. */
+  phone: text('phone'),
+  /** Last line of the receipt: "Merci de votre visite !". */
+  receiptFooter: text('receipt_footer'),
   /**
    * Shared secret of the café's local network: POS devices sign their requests to the
    * Hub with it (HMAC), so a customer on the café Wi-Fi can't send orders. Created on first use.

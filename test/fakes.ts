@@ -9,6 +9,7 @@ import { projectEvents, type ProjectionOp } from '../src/modules/sales/sales.pro
 import type { SalesLineRecord, SalesOrderRecord, SalesPaymentRecord, SalesRepo } from '../src/modules/sales/sales.repo.js';
 import type { CatalogRepo, CategoryRecord, ProductRecord } from '../src/modules/catalog/catalog.repo.js';
 import type { CashMovementRecord, CashRepo, CashSessionRecord } from '../src/modules/cash/cash.repo.js';
+import type { BusinessRecord, BusinessRepo, UpdateBusinessBody } from '../src/modules/business/business.js';
 import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
@@ -524,6 +525,32 @@ export class FakeCashRepo implements CashRepo {
   }
 }
 
+/** Café details on top of the fake auth store (tenants + branches). */
+export class FakeBusinessRepo implements BusinessRepo {
+  extra = new Map<string, { address: string | null; phone: string | null; receiptFooter: string | null }>();
+  constructor(private readonly auth: FakeAuthRepo) {}
+  async find(branchId: string): Promise<BusinessRecord | null> {
+    const b = this.auth.branches.find((x) => x.id === branchId);
+    const t = b && this.auth.tenants.find((x) => x.id === b.tenantId);
+    if (!b || !t) return null;
+    const e = this.extra.get(branchId) ?? { address: null, phone: null, receiptFooter: null };
+    return { tenantId: t.id, businessName: t.name, taxId: t.taxId, branchName: b.name, ...e };
+  }
+  async update(branchId: string, tenantId: string, c: UpdateBusinessBody) {
+    const t = this.auth.tenants.find((x) => x.id === tenantId)!;
+    const b = this.auth.branches.find((x) => x.id === branchId)!;
+    if (c.businessName !== undefined) t.name = c.businessName;
+    if (c.taxId !== undefined) t.taxId = c.taxId;
+    if (c.branchName !== undefined) b.name = c.branchName;
+    const e = this.extra.get(branchId) ?? { address: null, phone: null, receiptFooter: null };
+    this.extra.set(branchId, {
+      address: c.address !== undefined ? c.address : e.address,
+      phone: c.phone !== undefined ? c.phone : e.phone,
+      receiptFooter: c.receiptFooter !== undefined ? c.receiptFooter : e.receiptFooter,
+    });
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
@@ -533,7 +560,8 @@ export function fakeRepos() {
   const floor = new FakeFloorRepo(devices);
   const sync = new FakeSyncRepo(devices, catalog, sales, staff, floor);
   const cash = new FakeCashRepo(sales, devices, staff);
-  const repos: Repos = { health: { ping: async () => {} }, auth, cash, catalog, devices, floor, sales, staff, sync };
+  const business = new FakeBusinessRepo(auth);
+  const repos: Repos = { health: { ping: async () => {} }, auth, business, cash, catalog, devices, floor, sales, staff, sync };
   return { repos, devices, sync, auth, catalog, sales, staff, floor };
 }
 
