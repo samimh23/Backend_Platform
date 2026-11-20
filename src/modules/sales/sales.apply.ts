@@ -63,6 +63,12 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
           .update(salesOrders)
           .set({ status: 'refunded', refundedAt: op.refundedAt, refundReason: op.reason, refundApprovedBy: op.approvedBy })
           .where(eq(salesOrders.id, op.orderId));
+        // Loyalty points earned with this receipt are taken back.
+        await tx.execute(sql`
+          insert into loyalty_ledger (id, customer_id, branch_id, points, kind, order_id, receipt_number, created_at)
+          select gen_random_uuid(), customer_id, branch_id, -points, 'refund', order_id, receipt_number, ${op.refundedAt.toISOString()}::timestamptz
+          from loyalty_ledger where order_id = ${op.orderId} and kind = 'earn'
+          on conflict do nothing`);
         break;
 
       case 'discountLines':

@@ -1,8 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type, type Static } from '@sinclair/typebox';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { branches, tenants } from '../../db/schema.js';
+import { branches, loyaltyPrograms, tenants } from '../../db/schema.js';
 import { AppError, Errors } from '../../shared/errors.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { DeviceContext } from '../devices/devices.service.js';
@@ -20,6 +20,11 @@ export const BusinessView = Type.Object({
   address: Type.Union([Type.String(), Type.Null()]),
   phone: Type.Union([Type.String(), Type.Null()]),
   receiptFooter: Type.Union([Type.String(), Type.Null()]),
+  /** Shown in the Kahwti customer app (search). */
+  listed: Type.Boolean(),
+  city: Type.Union([Type.String(), Type.Null()]),
+  /** The loyalty program is on: the POS prints a QR on receipts to earn points. */
+  loyaltyEnabled: Type.Boolean(),
 });
 export type BusinessView = Static<typeof BusinessView>;
 
@@ -31,6 +36,8 @@ export const UpdateBusinessBody = Type.Object(
     address: Type.Optional(Nullable(160)),
     phone: Type.Optional(Nullable(30)),
     receiptFooter: Type.Optional(Nullable(120)),
+    listed: Type.Optional(Type.Boolean()),
+    city: Type.Optional(Nullable(60)),
   },
   { additionalProperties: false, minProperties: 1 },
 );
@@ -62,9 +69,13 @@ export class DrizzleBusinessRepo implements BusinessRepo {
         address: branches.address,
         phone: branches.phone,
         receiptFooter: branches.receiptFooter,
+        listed: branches.listed,
+        city: branches.city,
+        loyaltyEnabled: sql<boolean>`coalesce(${loyaltyPrograms.enabled}, false)`,
       })
       .from(branches)
       .innerJoin(tenants, eq(tenants.id, branches.tenantId))
+      .leftJoin(loyaltyPrograms, eq(loyaltyPrograms.branchId, branches.id))
       .where(eq(branches.id, branchId));
     return r ?? null;
   }
@@ -80,6 +91,8 @@ export class DrizzleBusinessRepo implements BusinessRepo {
         ...(c.address !== undefined && { address: c.address }),
         ...(c.phone !== undefined && { phone: c.phone }),
         ...(c.receiptFooter !== undefined && { receiptFooter: c.receiptFooter }),
+        ...(c.listed !== undefined && { listed: c.listed }),
+        ...(c.city !== undefined && { city: c.city }),
       };
       if (Object.keys(tenant).length) await tx.update(tenants).set({ ...tenant, updatedAt: new Date() }).where(eq(tenants.id, tenantId));
       if (Object.keys(branch).length) await tx.update(branches).set({ ...branch, updatedAt: new Date() }).where(eq(branches.id, branchId));
@@ -112,6 +125,8 @@ export class BusinessService {
       ...(body.address !== undefined && { address: clean(body.address) }),
       ...(body.phone !== undefined && { phone: clean(body.phone) }),
       ...(body.receiptFooter !== undefined && { receiptFooter: clean(body.receiptFooter) }),
+      ...(body.listed !== undefined && { listed: body.listed }),
+      ...(body.city !== undefined && { city: clean(body.city) }),
     });
     return this.forOwner(owner, branchId);
   }

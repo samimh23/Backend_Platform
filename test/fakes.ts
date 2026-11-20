@@ -13,6 +13,8 @@ import type { BusinessRecord, BusinessRepo, UpdateBusinessBody } from '../src/mo
 import type { DeviceRecord, DeviceSummary, DevicesRepo, NewDevice, PairingCodeRecord, PairingContext } from '../src/modules/devices/devices.repo.js';
 import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js';
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
+import type { CustomerRecord, CustomersRepo } from '../src/modules/customers/customers.js';
+import type { CafeRecord, LoyaltyProgramView, LoyaltyRepo } from '../src/modules/loyalty/loyalty.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
 
@@ -384,6 +386,7 @@ export class FakeSalesRepo implements SalesRepo {
   cashSessions: CashSessionRecord[] = [];
   cashMovements: CashMovementRecord[] = [];
 
+  loyalty?: FakeLoyaltyRepo;
   constructor(private readonly devices: FakeDevicesRepo) {}
 
   apply(ctx: DeviceContext, ops: ProjectionOp[]) {
@@ -430,6 +433,7 @@ export class FakeSalesRepo implements SalesRepo {
               this.payments.push({ id: p.id, orderId: op.orderId, method: p.method, amount: p.amount, tendered: 0, changeGiven: 0 } as SalesPaymentRecord);
           }
           if (order) Object.assign(order, { status: 'refunded', refundedAt: op.refundedAt, refundReason: op.reason });
+          this.loyalty?.takeBack(op.orderId, op.refundedAt);
           break;
         case 'discountLines':
           for (const d of op.lines) {
@@ -542,15 +546,20 @@ export class FakeCashRepo implements CashRepo {
 }
 
 /** Café details on top of the fake auth store (tenants + branches). */
+type BusinessExtra = { address: string | null; phone: string | null; receiptFooter: string | null; listed: boolean; city: string | null };
+const noExtra: BusinessExtra = { address: null, phone: null, receiptFooter: null, listed: false, city: null };
+
 export class FakeBusinessRepo implements BusinessRepo {
-  extra = new Map<string, { address: string | null; phone: string | null; receiptFooter: string | null }>();
+  extra = new Map<string, BusinessExtra>();
+  loyalty?: FakeLoyaltyRepo;
   constructor(private readonly auth: FakeAuthRepo) {}
   async find(branchId: string): Promise<BusinessRecord | null> {
     const b = this.auth.branches.find((x) => x.id === branchId);
     const t = b && this.auth.tenants.find((x) => x.id === b.tenantId);
     if (!b || !t) return null;
-    const e = this.extra.get(branchId) ?? { address: null, phone: null, receiptFooter: null };
-    return { tenantId: t.id, businessName: t.name, taxId: t.taxId, branchName: b.name, ...e };
+    const e = this.extra.get(branchId) ?? noExtra;
+    const loyaltyEnabled = this.loyalty?.programs.get(branchId)?.enabled ?? false;
+    return { tenantId: t.id, businessName: t.name, taxId: t.taxId, branchName: b.name, ...e, loyaltyEnabled };
   }
   async update(branchId: string, tenantId: string, c: UpdateBusinessBody) {
     const t = this.auth.tenants.find((x) => x.id === tenantId)!;
@@ -558,12 +567,125 @@ export class FakeBusinessRepo implements BusinessRepo {
     if (c.businessName !== undefined) t.name = c.businessName;
     if (c.taxId !== undefined) t.taxId = c.taxId;
     if (c.branchName !== undefined) b.name = c.branchName;
-    const e = this.extra.get(branchId) ?? { address: null, phone: null, receiptFooter: null };
+    const e = this.extra.get(branchId) ?? noExtra;
     this.extra.set(branchId, {
       address: c.address !== undefined ? c.address : e.address,
       phone: c.phone !== undefined ? c.phone : e.phone,
       receiptFooter: c.receiptFooter !== undefined ? c.receiptFooter : e.receiptFooter,
+      listed: c.listed ?? e.listed,
+      city: c.city !== undefined ? c.city : e.city,
     });
+  }
+}
+
+export class FakeCustomersRepo implements CustomersRepo {
+  customers: CustomerRecord[] = [];
+  tokens: { id: string; customerId: string; tokenHash: string; expiresAt: Date; revokedAt: Date | null }[] = [];
+  async findByEmail(email: string) {
+    return this.customers.find((c) => c.email === email) ?? null;
+  }
+  async findById(id: string) {
+    return this.customers.find((c) => c.id === id) ?? null;
+  }
+  async create(c: CustomerRecord) {
+    if (this.customers.some((x) => x.email === c.email)) return false;
+    this.customers.push(c);
+    return true;
+  }
+  async saveRefreshToken(t: { id: string; customerId: string; tokenHash: string; expiresAt: Date }) {
+    this.tokens.push({ ...t, revokedAt: null });
+  }
+  async findRefreshToken(tokenHash: string) {
+    return this.tokens.find((t) => t.tokenHash === tokenHash) ?? null;
+  }
+  async revokeRefreshToken(id: string) {
+    const t = this.tokens.find((x) => x.id === id && !x.revokedAt);
+    if (t) t.revokedAt = new Date();
+    return !!t;
+  }
+  async revokeAllRefreshTokens(customerId: string) {
+    for (const t of this.tokens) if (t.customerId === customerId && !t.revokedAt) t.revokedAt = new Date();
+  }
+}
+
+type LedgerRow = {
+  customerId: string;
+  branchId: string;
+  points: number;
+  kind: 'earn' | 'redeem' | 'refund';
+  orderId: string | null;
+  receiptNumber: string | null;
+  rewardName: string | null;
+  createdAt: Date;
+};
+
+export class FakeLoyaltyRepo implements LoyaltyRepo {
+  programs = new Map<string, LoyaltyProgramView>();
+  ledger: LedgerRow[] = [];
+  constructor(
+    private readonly auth: FakeAuthRepo,
+    private readonly business: FakeBusinessRepo,
+    private readonly devices: FakeDevicesRepo,
+    private readonly sales: FakeSalesRepo,
+  ) {}
+
+  async listCafes(q: string | null) {
+    const all = await Promise.all(this.auth.branches.map((b) => this.cafe(b.id)));
+    return all
+      .filter((c): c is CafeRecord => !!c && c.listed)
+      .filter((c) => !q || [c.name, c.businessName, c.city ?? ''].some((s) => s.toLowerCase().includes(q.toLowerCase())))
+      .map((c) => ({ ...c, program: this.programs.get(c.id) ?? null }));
+  }
+  async cafe(branchId: string): Promise<CafeRecord | null> {
+    const r = await this.business.find(branchId);
+    if (!r) return null;
+    return {
+      id: branchId,
+      tenantId: r.tenantId,
+      name: r.branchName,
+      businessName: r.businessName,
+      city: r.city,
+      address: r.address,
+      phone: r.phone,
+      listed: r.listed,
+    };
+  }
+  async program(branchId: string) {
+    return this.programs.get(branchId) ?? null;
+  }
+  async saveProgram(branchId: string, p: LoyaltyProgramView) {
+    this.programs.set(branchId, p);
+  }
+  async device(id: string) {
+    const d = this.devices.devices.find((x) => x.id === id);
+    return d ? { branchId: d.branchId, publicKey: d.publicKey, disabled: d.disabled } : null;
+  }
+  async orderStatus(orderId: string) {
+    return this.sales.orders.find((o) => o.id === orderId)?.status ?? null;
+  }
+  async earn(e: { customerId: string; branchId: string; points: number; orderId: string; receiptNumber: string }) {
+    if (this.ledger.some((l) => l.orderId === e.orderId && l.kind === 'earn')) return false;
+    this.ledger.push({ ...e, kind: 'earn', rewardName: null, createdAt: new Date() });
+    return true;
+  }
+  takeBack(orderId: string, at: Date) {
+    const earn = this.ledger.find((l) => l.orderId === orderId && l.kind === 'earn');
+    if (earn && !this.ledger.some((l) => l.orderId === orderId && l.kind === 'refund')) {
+      this.ledger.push({ ...earn, points: -earn.points, kind: 'refund', createdAt: at });
+    }
+  }
+  async balance(customerId: string, branchId: string) {
+    return this.ledger.filter((l) => l.customerId === customerId && l.branchId === branchId).reduce((s, l) => s + l.points, 0);
+  }
+  async balances(customerId: string) {
+    const ids = [...new Set(this.ledger.filter((l) => l.customerId === customerId).map((l) => l.branchId))];
+    return Promise.all(ids.map(async (branchId) => ({ branchId, balance: await this.balance(customerId, branchId) })));
+  }
+  async history(customerId: string, branchId: string) {
+    return this.ledger
+      .filter((l) => l.customerId === customerId && l.branchId === branchId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map(({ points, kind, receiptNumber, rewardName, createdAt }) => ({ points, kind, receiptNumber, rewardName, createdAt }));
   }
 }
 
@@ -577,8 +699,25 @@ export function fakeRepos() {
   const sync = new FakeSyncRepo(devices, catalog, sales, staff, floor);
   const cash = new FakeCashRepo(sales, devices, staff);
   const business = new FakeBusinessRepo(auth);
-  const repos: Repos = { health: { ping: async () => {} }, auth, business, cash, catalog, devices, floor, sales, staff, sync };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor };
+  const customers = new FakeCustomersRepo();
+  const loyalty = new FakeLoyaltyRepo(auth, business, devices, sales);
+  business.loyalty = loyalty;
+  sales.loyalty = loyalty;
+  const repos: Repos = {
+    health: { ping: async () => {} },
+    auth,
+    business,
+    cash,
+    catalog,
+    customers,
+    devices,
+    floor,
+    loyalty,
+    sales,
+    staff,
+    sync,
+  };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

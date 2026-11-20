@@ -55,6 +55,9 @@ describe('business details (receipt header/footer)', () => {
       address: 'Rue de Marseille, Tunis',
       phone: '71 000 000',
       receiptFooter: 'Merci et à bientôt !',
+      listed: false,
+      city: null,
+      loyaltyEnabled: false,
     });
     expect((await req('PATCH', { phone: '  ' })).json().phone).toBeNull();
 

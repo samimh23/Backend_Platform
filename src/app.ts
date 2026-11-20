@@ -9,6 +9,7 @@ import { BusinessService, businessRoutes, DrizzleBusinessRepo, type BusinessRepo
 import { DrizzleCashRepo, type CashRepo } from './modules/cash/cash.repo.js';
 import { cashRoutes } from './modules/cash/cash.routes.js';
 import { CashService } from './modules/cash/cash.service.js';
+import { CustomersService, customerAuthRoutes, DrizzleCustomersRepo, type CustomerContext, type CustomersRepo } from './modules/customers/customers.js';
 import { DrizzleCatalogRepo, type CatalogRepo } from './modules/catalog/catalog.repo.js';
 import { catalogRoutes } from './modules/catalog/catalog.routes.js';
 import { CatalogService } from './modules/catalog/catalog.service.js';
@@ -22,6 +23,7 @@ import { HealthService, type HealthRepo } from './modules/health/health.service.
 import { DrizzleFloorRepo, type FloorRepo } from './modules/floor/floor.repo.js';
 import { floorRoutes } from './modules/floor/floor.routes.js';
 import { FloorService } from './modules/floor/floor.service.js';
+import { DrizzleLoyaltyRepo, LoyaltyService, loyaltyRoutes, type LoyaltyRepo } from './modules/loyalty/loyalty.js';
 import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
 import { salesRoutes } from './modules/sales/sales.routes.js';
 import { SalesService } from './modules/sales/sales.service.js';
@@ -33,7 +35,7 @@ import { syncRoutes } from './modules/sync/sync.routes.js';
 import { SyncService } from './modules/sync/sync.service.js';
 import { registerErrorHandler } from './plugins/errors.js';
 import { Argon2Hasher, type PasswordHasher } from './shared/passwords.js';
-import { TokenService } from './shared/tokens.js';
+import { CustomerTokenService, TokenService } from './shared/tokens.js';
 
 /** All services, wired once here. Routes only call them. */
 export interface Services {
@@ -42,8 +44,10 @@ export interface Services {
   business: BusinessService;
   cash: CashService;
   catalog: CatalogService;
+  customers: CustomersService;
   devices: DevicesService;
   floor: FloorService;
+  loyalty: LoyaltyService;
   sales: SalesService;
   staff: StaffService;
   sync: SyncService;
@@ -56,10 +60,13 @@ declare module 'fastify' {
     requireDevice: (req: FastifyRequest) => Promise<void>;
     /** preHandler for owner endpoints: checks "Authorization: Bearer <accessToken>" and sets req.owner. */
     requireOwner: (req: FastifyRequest) => Promise<void>;
+    /** preHandler for the customer (loyalty) app: a customer access token, never an owner one. */
+    requireCustomer: (req: FastifyRequest) => Promise<void>;
   }
   interface FastifyRequest {
     device: DeviceContext;
     owner: OwnerContext;
+    customer: CustomerContext;
   }
 }
 
@@ -70,8 +77,10 @@ export interface Repos {
   business: BusinessRepo;
   cash: CashRepo;
   catalog: CatalogRepo;
+  customers: CustomersRepo;
   devices: DevicesRepo;
   floor: FloorRepo;
+  loyalty: LoyaltyRepo;
   sales: SalesRepo;
   staff: StaffRepo;
   sync: SyncRepo;
@@ -84,8 +93,10 @@ export function reposFromDb(db: Db): Repos {
     business: new DrizzleBusinessRepo(db),
     cash: new DrizzleCashRepo(db),
     catalog: new DrizzleCatalogRepo(db),
+    customers: new DrizzleCustomersRepo(db),
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
+    loyalty: new DrizzleLoyaltyRepo(db),
     sales: new DrizzleSalesRepo(db),
     staff: new DrizzleStaffRepo(db),
     sync: new DrizzleSyncRepo(db),
@@ -111,14 +122,22 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   const app = Fastify({ logger: { level: logLevel } }).withTypeProvider<TypeBoxTypeProvider>();
 
   const tokens = new TokenService(auth.jwtSecret, auth.accessTtlMinutes * 60);
+  const passwords = passwordHasher ?? new Argon2Hasher();
   const services: Services = {
     health: new HealthService(repos.health),
-    auth: new AuthService(repos.auth, passwordHasher ?? new Argon2Hasher(), tokens, auth.refreshTtlDays),
+    auth: new AuthService(repos.auth, passwords, tokens, auth.refreshTtlDays),
     business: new BusinessService(repos.business),
     cash: new CashService(repos.cash),
     catalog: new CatalogService(repos.catalog),
+    customers: new CustomersService(
+      repos.customers,
+      passwords,
+      new CustomerTokenService(auth.jwtSecret, auth.accessTtlMinutes * 60),
+      auth.refreshTtlDays,
+    ),
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
+    loyalty: new LoyaltyService(repos.loyalty),
     sales: new SalesService(repos.sales),
     staff: new StaffService(repos.staff),
     sync: new SyncService(repos.sync),
@@ -133,6 +152,11 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   app.decorateRequest('owner', null as unknown as OwnerContext);
   app.decorate('requireOwner', async (req: FastifyRequest) => {
     req.owner = services.auth.authenticate(req.headers.authorization);
+  });
+
+  app.decorateRequest('customer', null as unknown as CustomerContext);
+  app.decorate('requireCustomer', async (req: FastifyRequest) => {
+    req.customer = services.customers.authenticate(req.headers.authorization);
   });
 
   registerErrorHandler(app);
@@ -157,6 +181,8 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(businessRoutes);
   await app.register(staffRoutes);
   await app.register(syncRoutes);
+  await app.register(customerAuthRoutes);
+  await app.register(loyaltyRoutes);
 
   return app;
 }

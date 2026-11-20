@@ -32,3 +32,35 @@ export class TokenService {
     }
   }
 }
+
+/** What a CUSTOMER access token carries (the loyalty app). */
+export interface CustomerClaims {
+  /** customer id */
+  sub: string;
+}
+
+/**
+ * Customer tokens use another issuer: an owner endpoint rejects them, and a
+ * customer endpoint rejects owner tokens, even though both are signed the same way.
+ */
+export class CustomerTokenService {
+  private readonly sign: (payload: object) => string;
+  private readonly check: (token: string) => CustomerClaims & { exp: number };
+
+  constructor(secret: string, readonly accessTtlSeconds: number) {
+    this.sign = createSigner({ key: secret, algorithm: 'HS256', expiresIn: accessTtlSeconds * 1000, iss: 'kahwti-customer' });
+    this.check = createVerifier({ key: secret, algorithms: ['HS256'], allowedIss: 'kahwti-customer' }) as never;
+  }
+
+  signAccess(claims: CustomerClaims): string {
+    return this.sign(claims);
+  }
+
+  verifyAccess(token: string): CustomerClaims | null {
+    try {
+      return { sub: this.check(token).sub };
+    } catch {
+      return null;
+    }
+  }
+}

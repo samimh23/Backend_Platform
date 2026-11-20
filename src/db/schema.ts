@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /*
  * Conventions (see Notion → Data model):
@@ -38,6 +38,9 @@ export const branches = pgTable('branches', {
   phone: text('phone'),
   /** Last line of the receipt: "Merci de votre visite !". */
   receiptFooter: text('receipt_footer'),
+  /** Shown in the customer app (owner opts in), with its city for the search. */
+  listed: boolean('listed').notNull().default(false),
+  city: text('city'),
   /**
    * Shared secret of the café's local network: POS devices sign their requests to the
    * Hub with it (HMAC), so a customer on the café Wi-Fi can't send orders. Created on first use.
@@ -426,4 +429,67 @@ export const cashMovements = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   },
   (t) => [index('cash_movements_session_idx').on(t.sessionId)],
+);
+
+// ── Customers (loyalty app) ─────────────────────────────────────
+
+/** People who use the Kahwti customer app. Separate from owners. */
+export const customers = pgTable('customers', {
+  id: uuid('id').primaryKey(),
+  /** Always stored lowercase. */
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  name: text('name').notNull(),
+  createdAt: createdAt(),
+});
+
+export const customerRefreshTokens = pgTable('customer_refresh_tokens', {
+  id: uuid('id').primaryKey(),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+/** A café's loyalty program, set by the owner. */
+export const loyaltyPrograms = pgTable('loyalty_programs', {
+  branchId: uuid('branch_id')
+    .primaryKey()
+    .references(() => branches.id),
+  enabled: boolean('enabled').notNull().default(false),
+  /** Points earned per dinar spent (1 = 1 point per DT). */
+  pointsPerDinar: integer('points_per_dinar').notNull().default(1),
+  /** [{ id, name, points, kind: free_product | amount_off, productId?, amount? }] */
+  rewards: jsonb('rewards').notNull().default(sql`'[]'::jsonb`),
+  updatedAt: updatedAt(),
+});
+
+/** Every point earned or spent: the balance is the sum, per café. */
+export const loyaltyLedger = pgTable(
+  'loyalty_ledger',
+  {
+    id: uuid('id').primaryKey(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    branchId: uuid('branch_id').notNull(),
+    /** + earned, − spent or taken back. */
+    points: integer('points').notNull(),
+    /** earn | redeem | refund */
+    kind: text('kind', { enum: ['earn', 'redeem', 'refund'] }).notNull(),
+    /** The receipt the points come from (earn / refund). One claim per receipt. */
+    orderId: uuid('order_id'),
+    receiptNumber: text('receipt_number'),
+    /** Spent on a reward (redeem). */
+    rewardName: text('reward_name'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('loyalty_ledger_customer_idx').on(t.customerId, t.branchId),
+    // One earn per receipt, and its refund (points taken back) only once.
+    uniqueIndex('loyalty_ledger_order_once_idx').on(t.orderId, t.kind).where(sql`${t.kind} <> 'redeem'`),
+  ],
 );
