@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /*
  * Conventions (see Notion → Data model):
@@ -523,4 +523,70 @@ export const loyaltyRedemptions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('loyalty_redemptions_code_idx').on(t.branchId, t.code)],
+);
+
+// ── Stock (ingredients) ─────────────────────────────────────────
+
+/** Something the café buys and uses: coffee beans (g), milk (ml), croissants (pieces). */
+export const stockItems = pgTable(
+  'stock_items',
+  {
+    id: uuid('id').primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    name: text('name').notNull(),
+    /** Quantities are whole numbers of this unit. */
+    unit: text('unit', { enum: ['g', 'ml', 'piece'] }).notNull(),
+    /** Can go below 0 when sales are recorded before a delivery is entered. */
+    quantity: integer('quantity').notNull().default(0),
+    /** "Stock bas" at or under this quantity; null = no alert. */
+    lowThreshold: integer('low_threshold'),
+    archived: boolean('archived').notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('stock_items_branch_idx').on(t.branchId)],
+);
+
+/** What one unit of a product uses: Cappuccino = 8 g coffee + 150 ml milk. */
+export const recipeLines = pgTable(
+  'recipe_lines',
+  {
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => products.id),
+    stockItemId: uuid('stock_item_id')
+      .notNull()
+      .references(() => stockItems.id),
+    qty: integer('qty').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.productId, t.stockItemId] })],
+);
+
+/** Every change of a stock quantity: sales (automatic), deliveries, losses, counts. */
+export const stockMovements = pgTable(
+  'stock_movements',
+  {
+    id: uuid('id').primaryKey(),
+    stockItemId: uuid('stock_item_id')
+      .notNull()
+      .references(() => stockItems.id),
+    branchId: uuid('branch_id').notNull(),
+    kind: text('kind', { enum: ['sale', 'delivery', 'waste', 'count'] }).notNull(),
+    /** + in, − out. */
+    delta: integer('delta').notNull(),
+    quantityAfter: integer('quantity_after').notNull(),
+    /** The paid ticket (sale). */
+    orderId: uuid('order_id'),
+    note: text('note'),
+    /** Owner/manager who entered it (null for sales). */
+    userId: uuid('user_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('stock_movements_item_idx').on(t.stockItemId, t.createdAt),
+    // A ticket takes each ingredient out once, even if its events are sent again.
+    uniqueIndex('stock_movements_sale_once_idx').on(t.orderId, t.stockItemId).where(sql`${t.kind} = 'sale'`),
+  ],
 );

@@ -29,6 +29,7 @@ import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js'
 import { salesRoutes } from './modules/sales/sales.routes.js';
 import { SalesService } from './modules/sales/sales.service.js';
 import { DrizzleStaffRepo, type StaffRepo } from './modules/staff/staff.repo.js';
+import { DrizzleStockRepo, StockService, stockRoutes, type StockRepo } from './modules/stock/stock.js';
 import { staffRoutes } from './modules/staff/staff.routes.js';
 import { StaffService } from './modules/staff/staff.service.js';
 import { DrizzleSyncRepo, type SyncRepo } from './modules/sync/sync.repo.js';
@@ -52,6 +53,7 @@ export interface Services {
   redemptions: RedemptionsService;
   sales: SalesService;
   staff: StaffService;
+  stock: StockService;
   sync: SyncService;
 }
 
@@ -86,6 +88,7 @@ export interface Repos {
   redemptions: RedemptionsRepo;
   sales: SalesRepo;
   staff: StaffRepo;
+  stock: StockRepo;
   sync: SyncRepo;
 }
 
@@ -103,6 +106,7 @@ export function reposFromDb(db: Db): Repos {
     redemptions: new DrizzleRedemptionsRepo(db),
     sales: new DrizzleSalesRepo(db),
     staff: new DrizzleStaffRepo(db),
+    stock: new DrizzleStockRepo(db),
     sync: new DrizzleSyncRepo(db),
   };
 }
@@ -145,6 +149,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     redemptions: new RedemptionsService(repos.redemptions, repos.loyalty),
     sales: new SalesService(repos.sales),
     staff: new StaffService(repos.staff),
+    stock: new StockService(repos.stock),
     sync: new SyncService(repos.sync),
   };
   app.decorate('services', services);
@@ -185,6 +190,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(cashRoutes);
   await app.register(businessRoutes);
   await app.register(staffRoutes);
+  await app.register(stockRoutes);
   await app.register(syncRoutes);
   await app.register(customerAuthRoutes);
   await app.register(loyaltyRoutes);

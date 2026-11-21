@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { cashMovements, cashSessions, salesOrderLines, salesOrders, salesPayments } from '../../db/schema.js';
 import type { DeviceContext } from '../devices/devices.service.js';
+import { consumeForOrder } from '../stock/stock.js';
 import type { ProjectionOp } from './sales.projection.js';
 
 /** A Drizzle transaction (or the db itself). */
@@ -111,6 +112,8 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
             receiptNumber: op.receiptNumber,
           })
           .where(eq(salesOrders.id, op.orderId));
+        // Paid: its ingredients leave the stock.
+        await consumeForOrder(tx, { orderId: op.orderId, branchId: ctx.branchId });
         break;
 
       case 'cancelOrder':

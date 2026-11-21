@@ -16,6 +16,7 @@ import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 import type { CustomerRecord, CustomersRepo } from '../src/modules/customers/customers.js';
 import type { CafeRecord, LoyaltyProgramView, LoyaltyRepo } from '../src/modules/loyalty/loyalty.js';
 import type { RedemptionRecord, RedemptionsRepo } from '../src/modules/loyalty/redemptions.js';
+import type { StockItemRecord, StockRepo } from '../src/modules/stock/stock.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
 
@@ -388,6 +389,7 @@ export class FakeSalesRepo implements SalesRepo {
   cashMovements: CashMovementRecord[] = [];
 
   loyalty?: FakeLoyaltyRepo;
+  stock?: FakeStockRepo;
   constructor(private readonly devices: FakeDevicesRepo) {}
 
   apply(ctx: DeviceContext, ops: ProjectionOp[]) {
@@ -448,6 +450,7 @@ export class FakeSalesRepo implements SalesRepo {
           break;
         case 'closeOrder':
           if (order) Object.assign(order, { status: 'paid', closedAt: op.closedAt, total: op.total, itemCount: op.itemCount, receiptNumber: op.receiptNumber });
+          this.stock?.consume(op.orderId, ctx.branchId);
           break;
         case 'cancelOrder':
           if (order) Object.assign(order, { status: 'cancelled', closedAt: op.closedAt });
@@ -732,6 +735,76 @@ export class FakeRedemptionsRepo implements RedemptionsRepo {
   }
 }
 
+type FakeMovement = {
+  stockItemId: string;
+  kind: string;
+  delta: number;
+  quantityAfter: number;
+  note: string | null;
+  orderId: string | null;
+  createdAt: Date;
+};
+
+export class FakeStockRepo implements StockRepo {
+  items: StockItemRecord[] = [];
+  recipes: { productId: string; stockItemId: string; qty: number }[] = [];
+  moves: FakeMovement[] = [];
+  constructor(
+    private readonly devices: FakeDevicesRepo,
+    private readonly catalog: FakeCatalogRepo,
+    private readonly sales: FakeSalesRepo,
+  ) {}
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  async productBranch(productId: string) {
+    return (await this.catalog.findProduct(productId))?.branchId ?? null;
+  }
+  async item(id: string) {
+    const i = this.items.find((x) => x.id === id);
+    return i ? { ...i } : null;
+  }
+  async listItems(branchId: string) {
+    return this.items.filter((i) => i.branchId === branchId).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async listRecipes(branchId: string) {
+    const ids = new Set(this.items.filter((i) => i.branchId === branchId).map((i) => i.id));
+    return this.recipes.filter((r) => ids.has(r.stockItemId));
+  }
+  async createItem(item: StockItemRecord) {
+    this.items.push({ ...item });
+  }
+  async updateItem(id: string, patch: Partial<StockItemRecord>) {
+    Object.assign(this.items.find((i) => i.id === id)!, patch);
+  }
+  async move(id: string, m: { kind: 'delivery' | 'waste' | 'count'; quantity: number; note: string | null }) {
+    const i = this.items.find((x) => x.id === id)!;
+    const delta = m.kind === 'delivery' ? m.quantity : m.kind === 'waste' ? -m.quantity : m.quantity - i.quantity;
+    i.quantity += delta;
+    this.moves.push({ stockItemId: id, kind: m.kind, delta, quantityAfter: i.quantity, note: m.note, orderId: null, createdAt: new Date() });
+    return i.quantity;
+  }
+  async movements(id: string, limit: number) {
+    return this.moves.filter((m) => m.stockItemId === id).reverse().slice(0, limit);
+  }
+  async setRecipe(productId: string, lines: { stockItemId: string; qty: number }[]) {
+    this.recipes = [...this.recipes.filter((r) => r.productId !== productId), ...lines.map((l) => ({ productId, ...l }))];
+  }
+  /** Same rule as consumeForOrder (SQL): recipes × quantities of the ticket's items, once. */
+  consume(orderId: string, branchId: string) {
+    const used = new Map<string, number>();
+    for (const l of this.sales.lines.filter((x) => x.orderId === orderId && !x.voided)) {
+      for (const r of this.recipes.filter((x) => x.productId === l.productId)) used.set(r.stockItemId, (used.get(r.stockItemId) ?? 0) + l.qty * r.qty);
+    }
+    for (const [stockItemId, n] of used) {
+      const i = this.items.find((x) => x.id === stockItemId && x.branchId === branchId);
+      if (!i || this.moves.some((m) => m.kind === 'sale' && m.orderId === orderId && m.stockItemId === stockItemId)) continue;
+      i.quantity -= n;
+      this.moves.push({ stockItemId, kind: 'sale', delta: -n, quantityAfter: i.quantity, note: null, orderId, createdAt: new Date() });
+    }
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
@@ -747,6 +820,8 @@ export function fakeRepos() {
   business.loyalty = loyalty;
   sales.loyalty = loyalty;
   const redemptions = new FakeRedemptionsRepo(loyalty, customers);
+  const stock = new FakeStockRepo(devices, catalog, sales);
+  sales.stock = stock;
   const repos: Repos = {
     health: { ping: async () => {} },
     auth,
@@ -760,9 +835,10 @@ export function fakeRepos() {
     redemptions,
     sales,
     staff,
+    stock,
     sync,
   };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */
