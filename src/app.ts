@@ -24,6 +24,7 @@ import { DrizzleFloorRepo, type FloorRepo } from './modules/floor/floor.repo.js'
 import { floorRoutes } from './modules/floor/floor.routes.js';
 import { FloorService } from './modules/floor/floor.service.js';
 import { DrizzleLoyaltyRepo, LoyaltyService, loyaltyRoutes, type LoyaltyRepo } from './modules/loyalty/loyalty.js';
+import { DrizzleRedemptionsRepo, RedemptionsService, redemptionRoutes, type RedemptionsRepo } from './modules/loyalty/redemptions.js';
 import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
 import { salesRoutes } from './modules/sales/sales.routes.js';
 import { SalesService } from './modules/sales/sales.service.js';
@@ -48,6 +49,7 @@ export interface Services {
   devices: DevicesService;
   floor: FloorService;
   loyalty: LoyaltyService;
+  redemptions: RedemptionsService;
   sales: SalesService;
   staff: StaffService;
   sync: SyncService;
@@ -81,6 +83,7 @@ export interface Repos {
   devices: DevicesRepo;
   floor: FloorRepo;
   loyalty: LoyaltyRepo;
+  redemptions: RedemptionsRepo;
   sales: SalesRepo;
   staff: StaffRepo;
   sync: SyncRepo;
@@ -97,6 +100,7 @@ export function reposFromDb(db: Db): Repos {
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
     loyalty: new DrizzleLoyaltyRepo(db),
+    redemptions: new DrizzleRedemptionsRepo(db),
     sales: new DrizzleSalesRepo(db),
     staff: new DrizzleStaffRepo(db),
     sync: new DrizzleSyncRepo(db),
@@ -138,6 +142,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
     loyalty: new LoyaltyService(repos.loyalty),
+    redemptions: new RedemptionsService(repos.redemptions, repos.loyalty),
     sales: new SalesService(repos.sales),
     staff: new StaffService(repos.staff),
     sync: new SyncService(repos.sync),
@@ -183,6 +188,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(syncRoutes);
   await app.register(customerAuthRoutes);
   await app.register(loyaltyRoutes);
+  await app.register(redemptionRoutes);
 
   return app;
 }

@@ -493,3 +493,34 @@ export const loyaltyLedger = pgTable(
     uniqueIndex('loyalty_ledger_order_once_idx').on(t.orderId, t.kind).where(sql`${t.kind} <> 'redeem'`),
   ],
 );
+
+/**
+ * A reward the customer wants, as a short code shown on their phone (valid a few minutes).
+ * The POS checks it, then redeems it: the points are spent once (ledger "redeem").
+ */
+export const loyaltyRedemptions = pgTable(
+  'loyalty_redemptions',
+  {
+    id: uuid('id').primaryKey(),
+    /** 6 digits, unique among the branch's active codes. */
+    code: text('code').notNull(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    branchId: uuid('branch_id').notNull(),
+    rewardId: text('reward_id').notNull(),
+    rewardName: text('reward_name').notNull(),
+    points: integer('points').notNull(),
+    kind: text('kind', { enum: ['free_product', 'amount_off'] }).notNull(),
+    productId: text('product_id'),
+    amount: integer('amount'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    /** Replaced by a newer code, or cancelled. */
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    orderId: uuid('order_id'),
+    deviceId: uuid('device_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('loyalty_redemptions_code_idx').on(t.branchId, t.code)],
+);

@@ -15,6 +15,7 @@ import type { SyncErrorRecord, SyncRepo } from '../src/modules/sync/sync.repo.js
 import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 import type { CustomerRecord, CustomersRepo } from '../src/modules/customers/customers.js';
 import type { CafeRecord, LoyaltyProgramView, LoyaltyRepo } from '../src/modules/loyalty/loyalty.js';
+import type { RedemptionRecord, RedemptionsRepo } from '../src/modules/loyalty/redemptions.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
 
@@ -689,6 +690,48 @@ export class FakeLoyaltyRepo implements LoyaltyRepo {
   }
 }
 
+export class FakeRedemptionsRepo implements RedemptionsRepo {
+  rows: (RedemptionRecord & { usedAt: Date | null; cancelledAt: Date | null; orderId: string | null })[] = [];
+  constructor(
+    private readonly loyalty: FakeLoyaltyRepo,
+    private readonly customers: FakeCustomersRepo,
+  ) {}
+  private live(branchId: string, code: string, now: Date) {
+    return this.rows.find((r) => r.branchId === branchId && r.code === code && !r.usedAt && !r.cancelledAt && r.expiresAt > now);
+  }
+  async codeTaken(branchId: string, code: string, now: Date) {
+    return !!this.live(branchId, code, now);
+  }
+  async cancelPending(customerId: string, branchId: string, now: Date) {
+    for (const r of this.rows) if (r.customerId === customerId && r.branchId === branchId && !r.usedAt && !r.cancelledAt) r.cancelledAt = now;
+  }
+  async create(r: RedemptionRecord) {
+    this.rows.push({ ...r, usedAt: null, cancelledAt: null, orderId: null });
+  }
+  async findLive(branchId: string, code: string, now: Date) {
+    const r = this.live(branchId, code, now);
+    if (!r) return null;
+    const { usedAt: _u, cancelledAt: _c, orderId: _o, ...rec } = r;
+    return { ...rec, customerName: this.customers.customers.find((c) => c.id === r.customerId)?.name ?? '' };
+  }
+  async redeem(r: RedemptionRecord, use: { orderId: string; deviceId: string; at: Date }) {
+    const row = this.rows.find((x) => x.id === r.id);
+    if (!row || row.usedAt || row.cancelledAt) return false;
+    Object.assign(row, { usedAt: use.at, orderId: use.orderId });
+    this.loyalty.ledger.push({
+      customerId: r.customerId,
+      branchId: r.branchId,
+      points: -r.points,
+      kind: 'redeem',
+      orderId: use.orderId,
+      receiptNumber: null,
+      rewardName: r.rewardName,
+      createdAt: use.at,
+    });
+    return true;
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
@@ -703,6 +746,7 @@ export function fakeRepos() {
   const loyalty = new FakeLoyaltyRepo(auth, business, devices, sales);
   business.loyalty = loyalty;
   sales.loyalty = loyalty;
+  const redemptions = new FakeRedemptionsRepo(loyalty, customers);
   const repos: Repos = {
     health: { ping: async () => {} },
     auth,
@@ -713,11 +757,12 @@ export function fakeRepos() {
     devices,
     floor,
     loyalty,
+    redemptions,
     sales,
     staff,
     sync,
   };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */
