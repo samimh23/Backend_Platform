@@ -24,6 +24,7 @@ import { DrizzleFloorRepo, type FloorRepo } from './modules/floor/floor.repo.js'
 import { floorRoutes } from './modules/floor/floor.routes.js';
 import { FloorService } from './modules/floor/floor.service.js';
 import { DrizzleLoyaltyRepo, LoyaltyService, loyaltyRoutes, type LoyaltyRepo } from './modules/loyalty/loyalty.js';
+import { ClubService, clubRoutes, DrizzleClubRepo, type ClubRepo } from './modules/loyalty/club.js';
 import { DrizzleRedemptionsRepo, RedemptionsService, redemptionRoutes, type RedemptionsRepo } from './modules/loyalty/redemptions.js';
 import { DrizzleSalesRepo, type SalesRepo } from './modules/sales/sales.repo.js';
 import { salesRoutes } from './modules/sales/sales.routes.js';
@@ -46,6 +47,7 @@ export interface Services {
   business: BusinessService;
   cash: CashService;
   catalog: CatalogService;
+  club: ClubService;
   customers: CustomersService;
   devices: DevicesService;
   floor: FloorService;
@@ -81,6 +83,7 @@ export interface Repos {
   business: BusinessRepo;
   cash: CashRepo;
   catalog: CatalogRepo;
+  club: ClubRepo;
   customers: CustomersRepo;
   devices: DevicesRepo;
   floor: FloorRepo;
@@ -99,6 +102,7 @@ export function reposFromDb(db: Db): Repos {
     business: new DrizzleBusinessRepo(db),
     cash: new DrizzleCashRepo(db),
     catalog: new DrizzleCatalogRepo(db),
+    club: new DrizzleClubRepo(db),
     customers: new DrizzleCustomersRepo(db),
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
@@ -131,12 +135,14 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
 
   const tokens = new TokenService(auth.jwtSecret, auth.accessTtlMinutes * 60);
   const passwords = passwordHasher ?? new Argon2Hasher();
+  const club = new ClubService(repos.club);
   const services: Services = {
     health: new HealthService(repos.health),
     auth: new AuthService(repos.auth, passwords, tokens, auth.refreshTtlDays),
     business: new BusinessService(repos.business),
     cash: new CashService(repos.cash),
     catalog: new CatalogService(repos.catalog),
+    club,
     customers: new CustomersService(
       repos.customers,
       passwords,
@@ -146,7 +152,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
     loyalty: new LoyaltyService(repos.loyalty),
-    redemptions: new RedemptionsService(repos.redemptions, repos.loyalty),
+    redemptions: new RedemptionsService(repos.redemptions, repos.loyalty, undefined, undefined, club),
     sales: new SalesService(repos.sales),
     staff: new StaffService(repos.staff),
     stock: new StockService(repos.stock),
@@ -195,6 +201,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(customerAuthRoutes);
   await app.register(loyaltyRoutes);
   await app.register(redemptionRoutes);
+  await app.register(clubRoutes);
 
   return app;
 }

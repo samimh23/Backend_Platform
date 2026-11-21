@@ -16,6 +16,7 @@ import type { SyncEvent } from '../src/modules/sync/sync.schema.js';
 import type { CustomerRecord, CustomersRepo } from '../src/modules/customers/customers.js';
 import type { CafeRecord, LoyaltyProgramView, LoyaltyRepo } from '../src/modules/loyalty/loyalty.js';
 import type { RedemptionRecord, RedemptionsRepo } from '../src/modules/loyalty/redemptions.js';
+import type { ClubRepo, GiftRecord } from '../src/modules/loyalty/club.js';
 import type { StockItemRecord, StockRepo } from '../src/modules/stock/stock.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
@@ -693,8 +694,73 @@ export class FakeLoyaltyRepo implements LoyaltyRepo {
   }
 }
 
+export class FakeClubRepo implements ClubRepo {
+  consents = new Map<string, boolean>();
+  gifts: (GiftRecord & { createdAt: Date; orderId: string | null })[] = [];
+  constructor(
+    private readonly devices: FakeDevicesRepo,
+    private readonly customers: FakeCustomersRepo,
+    private readonly loyalty: FakeLoyaltyRepo,
+    private readonly sales: FakeSalesRepo,
+    private readonly auth: FakeAuthRepo,
+  ) {}
+  branchTenant(id: string) {
+    return this.devices.branchTenant(id);
+  }
+  async setOptIn(customerId: string, branchId: string, optIn: boolean) {
+    this.consents.set(`${customerId}|${branchId}`, optIn);
+  }
+  async optIn(customerId: string, branchId: string) {
+    return this.consents.get(`${customerId}|${branchId}`) ?? false;
+  }
+  async customerCount(branchId: string) {
+    return new Set(this.loyalty.ledger.filter((l) => l.branchId === branchId).map((l) => l.customerId)).size;
+  }
+  async members(branchId: string) {
+    return this.customers.customers
+      .filter((c) => this.consents.get(`${c.id}|${branchId}`))
+      .map((c) => {
+        const orders = this.loyalty.ledger
+          .filter((l) => l.customerId === c.id && l.branchId === branchId && l.kind === 'earn')
+          .map((l) => this.sales.orders.find((o) => o.id === l.orderId))
+          .filter((o) => o?.status === 'paid');
+        const last = orders.map((o) => o!.closedAt!).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+        return {
+          id: c.id,
+          name: c.name,
+          visits: orders.length,
+          spent: orders.reduce((s, o) => s + o!.total, 0),
+          points: this.loyalty.ledger.filter((l) => l.customerId === c.id && l.branchId === branchId).reduce((s, l) => s + l.points, 0),
+          lastVisit: last,
+        };
+      });
+  }
+  async optedIn(branchId: string, ids: string[]) {
+    return ids.filter((id) => this.consents.get(`${id}|${branchId}`));
+  }
+  async createGifts(gifts: (GiftRecord & { createdBy: string })[]) {
+    for (const { createdBy: _c, ...g } of gifts) this.gifts.push({ ...g, createdAt: new Date(), orderId: null });
+  }
+  async campaigns(branchId: string) {
+    const ids = [...new Set(this.gifts.filter((g) => g.branchId === branchId).map((g) => g.campaignId))];
+    return ids.map((id) => {
+      const gs = this.gifts.filter((g) => g.campaignId === id);
+      return { id, name: gs[0]!.name, kind: gs[0]!.kind, sentAt: gs[0]!.createdAt, expiresAt: gs[0]!.expiresAt, sent: gs.length, used: gs.filter((g) => g.usedAt).length };
+    });
+  }
+  async activeGifts(customerId: string, now: Date, branchId?: string) {
+    return this.gifts
+      .filter((g) => g.customerId === customerId && !g.usedAt && g.expiresAt > now && (!branchId || g.branchId === branchId))
+      .map((g) => ({ ...g, cafeName: this.auth.branches.find((b) => b.id === g.branchId)?.name ?? '' }));
+  }
+  async gift(id: string) {
+    return this.gifts.find((g) => g.id === id) ?? null;
+  }
+}
+
 export class FakeRedemptionsRepo implements RedemptionsRepo {
   rows: (RedemptionRecord & { usedAt: Date | null; cancelledAt: Date | null; orderId: string | null })[] = [];
+  club?: FakeClubRepo;
   constructor(
     private readonly loyalty: FakeLoyaltyRepo,
     private readonly customers: FakeCustomersRepo,
@@ -720,7 +786,13 @@ export class FakeRedemptionsRepo implements RedemptionsRepo {
   async redeem(r: RedemptionRecord, use: { orderId: string; deviceId: string; at: Date }) {
     const row = this.rows.find((x) => x.id === r.id);
     if (!row || row.usedAt || row.cancelledAt) return false;
+    if (r.giftId) {
+      const g = this.club?.gifts.find((x) => x.id === r.giftId);
+      if (!g || g.usedAt) return false;
+      Object.assign(g, { usedAt: use.at, orderId: use.orderId });
+    }
     Object.assign(row, { usedAt: use.at, orderId: use.orderId });
+    if (r.points === 0) return true;
     this.loyalty.ledger.push({
       customerId: r.customerId,
       branchId: r.branchId,
@@ -820,6 +892,8 @@ export function fakeRepos() {
   business.loyalty = loyalty;
   sales.loyalty = loyalty;
   const redemptions = new FakeRedemptionsRepo(loyalty, customers);
+  const club = new FakeClubRepo(devices, customers, loyalty, sales, auth);
+  redemptions.club = club;
   const stock = new FakeStockRepo(devices, catalog, sales);
   sales.stock = stock;
   const repos: Repos = {
@@ -828,6 +902,7 @@ export function fakeRepos() {
     business,
     cash,
     catalog,
+    club,
     customers,
     devices,
     floor,
@@ -838,7 +913,7 @@ export function fakeRepos() {
     stock,
     sync,
   };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock, club };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

@@ -54,7 +54,14 @@ const CafeSummary = Type.Object({
 });
 const CafeDetail = Type.Composite([CafeSummary, Type.Object({ phone: Type.Union([Type.String(), Type.Null()]), rewards: Type.Array(Reward) })]);
 
-const ClaimBody = Type.Object({ code: Type.String({ minLength: 10, maxLength: 2000 }) }, { additionalProperties: false });
+const ClaimBody = Type.Object(
+  {
+    code: Type.String({ minLength: 10, maxLength: 2000 }),
+    /** "Join this café's club" ticked on the claim page. */
+    optIn: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
 const ClaimResult = Type.Object({
   cafeId: Type.String(),
   cafeName: Type.String(),
@@ -78,7 +85,18 @@ const LedgerEntry = Type.Object({
   rewardName: Type.Union([Type.String(), Type.Null()]),
   at: Type.String(),
 });
-const MyCafe = Type.Composite([CafeDetail, Type.Object({ balance: Type.Integer(), history: Type.Array(LedgerEntry) })]);
+const MyCafe = Type.Composite([
+  CafeDetail,
+  Type.Object({
+    balance: Type.Integer(),
+    history: Type.Array(LedgerEntry),
+    /** Member of the café's club (shares name and visits, receives gifts). */
+    optIn: Type.Boolean(),
+    gifts: Type.Array(
+      Type.Object({ id: Type.String(), name: Type.String(), kind: Type.String(), expiresAt: Type.String() }),
+    ),
+  }),
+]);
 
 // ── Repo ────────────────────────────────────────────────────────
 
@@ -397,7 +415,11 @@ export const loyaltyRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: { body: ClaimBody, response: { 200: ClaimResult } },
       preHandler: app.requireCustomer,
     },
-    (req) => loyalty.claim(req.customer, req.body.code),
+    async (req) => {
+      const r = await loyalty.claim(req.customer, req.body.code);
+      if (req.body.optIn) await app.services.club.setOptIn(req.customer, r.cafeId, true);
+      return r;
+    },
   );
   app.get('/v1/customer/points', { schema: { response: { 200: Type.Array(Balance) } }, preHandler: app.requireCustomer }, (req) =>
     loyalty.myPoints(req.customer),
@@ -405,6 +427,13 @@ export const loyaltyRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.get(
     '/v1/customer/points/:branchId',
     { schema: { params: BranchParams, response: { 200: MyCafe } }, preHandler: app.requireCustomer },
-    (req) => loyalty.myCafe(req.customer, req.params.branchId),
+    async (req) => {
+      const [cafe, optIn, gifts] = await Promise.all([
+        loyalty.myCafe(req.customer, req.params.branchId),
+        app.services.club.optIn(req.customer, req.params.branchId),
+        app.services.club.myGifts(req.customer, req.params.branchId),
+      ]);
+      return { ...cafe, optIn, gifts: gifts.map(({ id, name, kind, expiresAt }) => ({ id, name, kind, expiresAt })) };
+    },
   );
 };

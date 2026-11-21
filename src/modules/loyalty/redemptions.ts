@@ -1,13 +1,14 @@
 import { randomInt } from 'node:crypto';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type, type Static } from '@sinclair/typebox';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, TransactionRollbackError } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { customers, loyaltyLedger, loyaltyRedemptions } from '../../db/schema.js';
+import { customers, loyaltyGifts, loyaltyLedger, loyaltyRedemptions } from '../../db/schema.js';
 import { AppError } from '../../shared/errors.js';
 import { newId } from '../../shared/ids.js';
 import type { CustomerContext } from '../customers/customers.js';
 import type { DeviceContext } from '../devices/devices.service.js';
+import type { ClubService } from './club.js';
 import { LoyaltyErrors, type LoyaltyRepo } from './loyalty.js';
 
 /**
@@ -36,6 +37,8 @@ export const RedemptionView = Type.Object({
   productId: Type.Union([Type.String(), Type.Null()]),
   amount: Type.Union([Type.Integer(), Type.Null()]),
   customerName: Type.String(),
+  /** A gift from the café (no points spent). */
+  gift: Type.Boolean(),
 });
 export type RedemptionView = Static<typeof RedemptionView>;
 
@@ -56,6 +59,8 @@ export interface RedemptionRecord {
   productId: string | null;
   amount: number | null;
   expiresAt: Date;
+  /** A gift from the café: points = 0, the gift is marked used instead. */
+  giftId: string | null;
 }
 
 export interface RedemptionsRepo {
@@ -120,6 +125,7 @@ export class DrizzleRedemptionsRepo implements RedemptionsRepo {
         productId: loyaltyRedemptions.productId,
         amount: loyaltyRedemptions.amount,
         expiresAt: loyaltyRedemptions.expiresAt,
+        giftId: loyaltyRedemptions.giftId,
         customerName: customers.name,
       })
       .from(loyaltyRedemptions)
@@ -129,13 +135,35 @@ export class DrizzleRedemptionsRepo implements RedemptionsRepo {
   }
 
   async redeem(r: RedemptionRecord, use: { orderId: string; deviceId: string; at: Date }) {
+    try {
+      return await this.spend(r, use);
+    } catch (e) {
+      if (e instanceof TransactionRollbackError) return false;
+      throw e;
+    }
+  }
+
+  private spend(r: RedemptionRecord, use: { orderId: string; deviceId: string; at: Date }) {
     return this.db.transaction(async (tx) => {
+      if (r.giftId) {
+        // A gift is used once, whatever code was made for it.
+        const gift = await tx
+          .update(loyaltyGifts)
+          .set({ usedAt: use.at, orderId: use.orderId })
+          .where(and(eq(loyaltyGifts.id, r.giftId), isNull(loyaltyGifts.usedAt)))
+          .returning({ id: loyaltyGifts.id });
+        if (gift.length !== 1) return false;
+      }
       const done = await tx
         .update(loyaltyRedemptions)
         .set({ usedAt: use.at, orderId: use.orderId, deviceId: use.deviceId })
         .where(and(eq(loyaltyRedemptions.id, r.id), isNull(loyaltyRedemptions.usedAt), isNull(loyaltyRedemptions.cancelledAt)))
         .returning({ id: loyaltyRedemptions.id });
-      if (done.length !== 1) return false;
+      if (done.length !== 1) {
+        tx.rollback(); // undo the gift: this code was used meanwhile
+        return false;
+      }
+      if (r.points === 0) return true;
       await tx.insert(loyaltyLedger).values({
         id: newId(),
         customerId: r.customerId,
@@ -169,6 +197,7 @@ export class RedemptionsService {
     private readonly loyalty: LoyaltyRepo,
     private readonly now: () => Date = () => new Date(),
     private readonly randomCode: () => string = () => String(randomInt(0, 1_000_000)).padStart(6, '0'),
+    private readonly club?: ClubService,
   ) {}
 
   /** Customer: "Utiliser" on a reward. */
@@ -179,6 +208,37 @@ export class RedemptionsService {
     if (!reward?.id) throw RedemptionErrors.rewardNotFound();
     if ((await this.loyalty.balance(ctx.customerId, branchId)) < reward.points) throw RedemptionErrors.notEnoughPoints();
 
+    return this.issue(ctx, branchId, {
+      rewardId: reward.id,
+      rewardName: reward.name,
+      points: reward.points,
+      kind: reward.kind,
+      productId: reward.productId ?? null,
+      amount: reward.amount ?? null,
+      giftId: null,
+    });
+  }
+
+  /** Customer: "Utiliser" on a gift from the café. */
+  async createForGift(ctx: CustomerContext, giftId: string): Promise<Static<typeof RedemptionCode>> {
+    if (!this.club) throw new AppError('NOT_AVAILABLE', 'Gifts are not available', 503);
+    const g = await this.club.usableGift(ctx, giftId);
+    return this.issue(ctx, g.branchId, {
+      rewardId: 'gift',
+      rewardName: g.name,
+      points: 0,
+      kind: g.kind,
+      productId: g.productId,
+      amount: g.amount,
+      giftId: g.id,
+    });
+  }
+
+  private async issue(
+    ctx: CustomerContext,
+    branchId: string,
+    r: Omit<RedemptionRecord, 'id' | 'code' | 'customerId' | 'branchId' | 'expiresAt'>,
+  ): Promise<Static<typeof RedemptionCode>> {
     const now = this.now();
     await this.repo.cancelPending(ctx.customerId, branchId, now);
     let code = this.randomCode();
@@ -186,20 +246,8 @@ export class RedemptionsService {
     if (await this.repo.codeTaken(branchId, code, now)) throw new AppError('TRY_AGAIN', 'Try again', 503);
 
     const expiresAt = new Date(now.getTime() + REDEMPTION_TTL_MS);
-    await this.repo.create({
-      id: newId(),
-      code,
-      customerId: ctx.customerId,
-      branchId,
-      rewardId: reward.id,
-      rewardName: reward.name,
-      points: reward.points,
-      kind: reward.kind,
-      productId: reward.productId ?? null,
-      amount: reward.amount ?? null,
-      expiresAt,
-    });
-    return { code, expiresAt: expiresAt.toISOString(), rewardName: reward.name, points: reward.points };
+    await this.repo.create({ id: newId(), code, customerId: ctx.customerId, branchId, expiresAt, ...r });
+    return { code, expiresAt: expiresAt.toISOString(), rewardName: r.rewardName, points: r.points };
   }
 
   /** POS: what is this code? Nothing is spent. */
@@ -221,7 +269,9 @@ export class RedemptionsService {
     const r = await this.repo.findLive(device.branchId, code, this.now());
     if (!r) throw RedemptionErrors.codeNotFound();
     // Points may have gone meanwhile (a refund, another reward).
-    if ((await this.loyalty.balance(r.customerId, r.branchId)) < r.points) throw RedemptionErrors.notEnoughPoints();
+    if (r.points > 0 && (await this.loyalty.balance(r.customerId, r.branchId)) < r.points) {
+      throw RedemptionErrors.notEnoughPoints();
+    }
     const { customerName, ...record } = r;
     const view: RedemptionView = {
       id: r.id,
@@ -231,6 +281,7 @@ export class RedemptionsService {
       productId: r.productId,
       amount: r.amount,
       customerName,
+      gift: r.giftId !== null,
     };
     return { record, view };
   }
@@ -255,6 +306,15 @@ export const redemptionRoutes: FastifyPluginAsyncTypebox = async (app) => {
       preHandler: app.requireCustomer,
     },
     (req) => redemptions.create(req.customer, req.params.branchId, req.body.rewardId),
+  );
+  app.post(
+    '/v1/customer/gifts/:giftId/code',
+    {
+      config: limited,
+      schema: { params: Type.Object({ giftId: Type.String({ format: 'uuid' }) }), response: { 200: RedemptionCode } },
+      preHandler: app.requireCustomer,
+    },
+    (req) => redemptions.createForGift(req.customer, req.params.giftId),
   );
   app.get(
     '/v1/devices/loyalty/redemptions/:code',

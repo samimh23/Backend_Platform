@@ -520,6 +520,8 @@ export const loyaltyRedemptions = pgTable(
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     orderId: uuid('order_id'),
     deviceId: uuid('device_id'),
+    /** Set when the code is for a gift from the café (no points spent). */
+    giftId: uuid('gift_id'),
     createdAt: createdAt(),
   },
   (t) => [index('loyalty_redemptions_code_idx').on(t.branchId, t.code)],
@@ -589,4 +591,52 @@ export const stockMovements = pgTable(
     // A ticket takes each ingredient out once, even if its events are sent again.
     uniqueIndex('stock_movements_sale_once_idx').on(t.orderId, t.stockItemId).where(sql`${t.kind} = 'sale'`),
   ],
+);
+
+// ── Café club (customer consent) and gifts ──────────────────────
+
+/**
+ * A customer's choice for one café: joining its club shares their first name and visits
+ * with the owner and lets the café send them gifts. Off by default; they can leave any time.
+ */
+export const customerCafes = pgTable(
+  'customer_cafes',
+  {
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    optIn: boolean('opt_in').notNull().default(false),
+    optInAt: timestamp('opt_in_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.customerId, t.branchId] })],
+);
+
+/** A gift the owner sends to club members (a free product or an amount off), used once at the POS. */
+export const loyaltyGifts = pgTable(
+  'loyalty_gifts',
+  {
+    id: uuid('id').primaryKey(),
+    /** Gifts sent together share it (one "campaign"). */
+    campaignId: uuid('campaign_id').notNull(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    name: text('name').notNull(),
+    kind: text('kind', { enum: ['free_product', 'amount_off'] }).notNull(),
+    productId: text('product_id'),
+    amount: integer('amount'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    orderId: uuid('order_id'),
+    createdBy: uuid('created_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('loyalty_gifts_customer_idx').on(t.customerId), index('loyalty_gifts_campaign_idx').on(t.branchId, t.campaignId)],
 );
