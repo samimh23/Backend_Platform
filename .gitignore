@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 *.log
+
+# Emails saved locally when no Brevo key is set
+.mail-outbox/

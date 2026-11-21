@@ -36,6 +36,9 @@ import { StaffService } from './modules/staff/staff.service.js';
 import { DrizzleSyncRepo, type SyncRepo } from './modules/sync/sync.repo.js';
 import { syncRoutes } from './modules/sync/sync.routes.js';
 import { SyncService } from './modules/sync/sync.service.js';
+import { DailySummaryService, dailySummaryRoutes, DrizzleDailySummaryRepo, type DailySummaryRepo } from './modules/mail/daily-summary.js';
+import { FileMailer, type Mailer } from './modules/mail/mailer.js';
+import { DrizzlePasswordResetRepo, PasswordResetService, passwordResetRoutes, type PasswordResetRepo } from './modules/mail/password-reset.js';
 import { registerErrorHandler } from './plugins/errors.js';
 import { Argon2Hasher, type PasswordHasher } from './shared/passwords.js';
 import { CustomerTokenService, TokenService } from './shared/tokens.js';
@@ -49,9 +52,11 @@ export interface Services {
   catalog: CatalogService;
   club: ClubService;
   customers: CustomersService;
+  dailySummary: DailySummaryService;
   devices: DevicesService;
   floor: FloorService;
   loyalty: LoyaltyService;
+  passwordResets: PasswordResetService;
   redemptions: RedemptionsService;
   sales: SalesService;
   staff: StaffService;
@@ -85,9 +90,11 @@ export interface Repos {
   catalog: CatalogRepo;
   club: ClubRepo;
   customers: CustomersRepo;
+  dailySummary: DailySummaryRepo;
   devices: DevicesRepo;
   floor: FloorRepo;
   loyalty: LoyaltyRepo;
+  passwordResets: PasswordResetRepo;
   redemptions: RedemptionsRepo;
   sales: SalesRepo;
   staff: StaffRepo;
@@ -104,9 +111,11 @@ export function reposFromDb(db: Db): Repos {
     catalog: new DrizzleCatalogRepo(db),
     club: new DrizzleClubRepo(db),
     customers: new DrizzleCustomersRepo(db),
+    dailySummary: new DrizzleDailySummaryRepo(db),
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
     loyalty: new DrizzleLoyaltyRepo(db),
+    passwordResets: new DrizzlePasswordResetRepo(db),
     redemptions: new DrizzleRedemptionsRepo(db),
     sales: new DrizzleSalesRepo(db),
     staff: new DrizzleStaffRepo(db),
@@ -127,15 +136,23 @@ export interface AppOptions {
   logLevel?: string;
   /** Tests can use a faster hasher. */
   passwordHasher?: PasswordHasher;
+  /** How emails leave (Brevo in production). Default: saved as files in .mail-outbox. */
+  mailer?: Mailer;
+  /** Website address, for links in emails. */
+  webUrl?: string;
 }
 
 /** Builds the app without listening — used by server.ts and by tests (app.inject). */
-export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher }: AppOptions) {
+export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher, mailer, webUrl = 'http://localhost:3001' }: AppOptions) {
   const app = Fastify({ logger: { level: logLevel } }).withTypeProvider<TypeBoxTypeProvider>();
 
   const tokens = new TokenService(auth.jwtSecret, auth.accessTtlMinutes * 60);
   const passwords = passwordHasher ?? new Argon2Hasher();
   const club = new ClubService(repos.club);
+  const mail = mailer ?? new FileMailer('.mail-outbox', (m) => app.log.info(m));
+  const logError = (msg: string, err?: unknown) => app.log.error({ err }, msg);
+  const sales = new SalesService(repos.sales);
+  const stock = new StockService(repos.stock);
   const services: Services = {
     health: new HealthService(repos.health),
     auth: new AuthService(repos.auth, passwords, tokens, auth.refreshTtlDays),
@@ -149,13 +166,15 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
       new CustomerTokenService(auth.jwtSecret, auth.accessTtlMinutes * 60),
       auth.refreshTtlDays,
     ),
+    dailySummary: new DailySummaryService(repos.dailySummary, sales, stock, mail, webUrl, logError),
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
     loyalty: new LoyaltyService(repos.loyalty),
+    passwordResets: new PasswordResetService(repos.passwordResets, mail, passwords, webUrl, logError),
     redemptions: new RedemptionsService(repos.redemptions, repos.loyalty, undefined, undefined, club),
-    sales: new SalesService(repos.sales),
+    sales,
     staff: new StaffService(repos.staff),
-    stock: new StockService(repos.stock),
+    stock,
     sync: new SyncService(repos.sync),
   };
   app.decorate('services', services);
@@ -202,6 +221,8 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher 
   await app.register(loyaltyRoutes);
   await app.register(redemptionRoutes);
   await app.register(clubRoutes);
+  await app.register(passwordResetRoutes);
+  await app.register(dailySummaryRoutes);
 
   return app;
 }

@@ -18,6 +18,9 @@ import type { CafeRecord, LoyaltyProgramView, LoyaltyRepo } from '../src/modules
 import type { RedemptionRecord, RedemptionsRepo } from '../src/modules/loyalty/redemptions.js';
 import type { ClubRepo, GiftRecord } from '../src/modules/loyalty/club.js';
 import type { StockItemRecord, StockRepo } from '../src/modules/stock/stock.js';
+import type { DailySummaryRepo } from '../src/modules/mail/daily-summary.js';
+import { MemoryMailer } from '../src/modules/mail/mailer.js';
+import type { AccountKind, PasswordResetRepo } from '../src/modules/mail/password-reset.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
 
@@ -877,6 +880,63 @@ export class FakeStockRepo implements StockRepo {
   }
 }
 
+export class FakePasswordResetRepo implements PasswordResetRepo {
+  links: { id: string; kind: AccountKind; userId: string; tokenHash: string; expiresAt: Date; usedAt: Date | null }[] = [];
+  constructor(
+    private readonly auth: FakeAuthRepo,
+    private readonly customers: FakeCustomersRepo,
+  ) {}
+  async findAccount(kind: AccountKind, email: string) {
+    const a = kind === 'owner' ? this.auth.users.find((u) => u.email === email) : this.customers.customers.find((c) => c.email === email);
+    return a ? { id: a.id, name: a.name, email: a.email } : null;
+  }
+  async create(r: { id: string; kind: AccountKind; userId: string; tokenHash: string; expiresAt: Date }) {
+    this.links.push({ ...r, usedAt: null });
+  }
+  async useAndSetPassword(kind: AccountKind, tokenHash: string, passwordHash: string, now: Date) {
+    const l = this.links.find((x) => x.tokenHash === tokenHash && x.kind === kind && !x.usedAt && x.expiresAt > now);
+    if (!l) return false;
+    l.usedAt = now;
+    if (kind === 'owner') {
+      this.auth.users.find((u) => u.id === l.userId)!.passwordHash = passwordHash;
+      for (const t of this.auth.tokens) if (t.userId === l.userId && !t.revokedAt) t.revokedAt = now;
+    } else {
+      this.customers.customers.find((c) => c.id === l.userId)!.passwordHash = passwordHash;
+      for (const t of this.customers.tokens) if (t.customerId === l.userId && !t.revokedAt) t.revokedAt = now;
+    }
+    return true;
+  }
+}
+
+export class FakeDailySummaryRepo implements DailySummaryRepo {
+  prefs = new Map<string, boolean>();
+  sentFor = new Map<string, string>();
+  gaps: { branchId: string; drawer: string; difference: number; closedAt: Date }[] = [];
+  constructor(private readonly auth: FakeAuthRepo) {}
+  async dueOwners(day: string) {
+    return this.auth.users
+      .filter((u) => u.role === 'owner' && (this.prefs.get(u.id) ?? true) && (this.sentFor.get(u.id) ?? '') < day)
+      .map((u) => ({ id: u.id, tenantId: u.tenantId, name: u.name, email: u.email }));
+  }
+  async claim(userId: string, day: string) {
+    if ((this.sentFor.get(userId) ?? '') >= day) return false;
+    this.sentFor.set(userId, day);
+    return true;
+  }
+  async branches(tenantId: string) {
+    return this.auth.branches.filter((b) => b.tenantId === tenantId).map(({ id, name }) => ({ id, name }));
+  }
+  async cashGaps(branchId: string, from: Date, to: Date) {
+    return this.gaps.filter((g) => g.branchId === branchId && g.closedAt >= from && g.closedAt < to);
+  }
+  async preference(userId: string) {
+    return this.prefs.get(userId) ?? true;
+  }
+  async setPreference(userId: string, on: boolean) {
+    this.prefs.set(userId, on);
+  }
+}
+
 export function fakeRepos() {
   const auth = new FakeAuthRepo();
   const devices = new FakeDevicesRepo(auth);
@@ -896,6 +956,8 @@ export function fakeRepos() {
   redemptions.club = club;
   const stock = new FakeStockRepo(devices, catalog, sales);
   sales.stock = stock;
+  const passwordResets = new FakePasswordResetRepo(auth, customers);
+  const dailySummary = new FakeDailySummaryRepo(auth);
   const repos: Repos = {
     health: { ping: async () => {} },
     auth,
@@ -904,16 +966,18 @@ export function fakeRepos() {
     catalog,
     club,
     customers,
+    dailySummary,
     devices,
     floor,
     loyalty,
+    passwordResets,
     redemptions,
     sales,
     staff,
     stock,
     sync,
   };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock, club };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock, club, passwordResets, dailySummary };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */
@@ -924,8 +988,15 @@ export const fastHasher: PasswordHasher = {
 
 export const testAuthConfig = { jwtSecret: 'test-secret-test-secret-test-secret-123', accessTtlMinutes: 15, refreshTtlDays: 30 };
 
-export function buildTestApp(repos: Repos, opts: { passwordHasher?: PasswordHasher } = {}) {
-  return buildApp({ repos, auth: testAuthConfig, logLevel: 'silent', passwordHasher: opts.passwordHasher ?? fastHasher });
+export function buildTestApp(repos: Repos, opts: { passwordHasher?: PasswordHasher; mailer?: MemoryMailer } = {}) {
+  return buildApp({
+    repos,
+    auth: testAuthConfig,
+    logLevel: 'silent',
+    passwordHasher: opts.passwordHasher ?? fastHasher,
+    mailer: opts.mailer ?? new MemoryMailer(),
+    webUrl: 'https://kahwti.test',
+  });
 }
 
 /** A valid Ed25519 public key shape (43 base64url chars). */

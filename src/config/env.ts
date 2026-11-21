@@ -14,6 +14,14 @@ const EnvSchema = Type.Object({
   JWT_SECRET: Type.String({ minLength: 32 }),
   ACCESS_TOKEN_TTL_MINUTES: Type.Integer({ default: 15, minimum: 1 }),
   REFRESH_TOKEN_TTL_DAYS: Type.Integer({ default: 30, minimum: 1 }),
+  /** Where the website is (links in emails). */
+  WEB_URL: Type.String({ default: 'http://localhost:3001' }),
+  /** Brevo transactional email key. Empty = emails are saved in MAIL_DIR instead of sent. Never commit it. */
+  BREVO_API_KEY: Type.Optional(Type.String()),
+  /** Sender address, verified in Brevo (Senders & IP). Required with BREVO_API_KEY. */
+  MAIL_FROM: Type.Optional(Type.String()),
+  MAIL_FROM_NAME: Type.String({ default: 'Kahwti' }),
+  MAIL_DIR: Type.String({ default: '.mail-outbox' }),
 });
 
 export type Env = Static<typeof EnvSchema>;
@@ -29,6 +37,9 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
   if (!Value.Check(EnvSchema, value)) {
     const errors = [...Value.Errors(EnvSchema, value)].map((e) => `  ${e.path}: ${e.message}`);
     throw new Error(`Invalid environment variables:\n${errors.join('\n')}`);
+  }
+  if (value.BREVO_API_KEY && !value.MAIL_FROM) {
+    throw new Error('Invalid environment variables:\n  /MAIL_FROM: required when BREVO_API_KEY is set (a sender verified in Brevo)');
   }
   return value;
 }

@@ -69,6 +69,10 @@ export const ownerUsers = pgTable(
     passwordHash: text('password_hash').notNull(),
     name: text('name').notNull(),
     role: text('role', { enum: ownerRoles }).notNull().default('owner'),
+    /** Gets yesterday's summary by email each morning (can turn it off). */
+    dailyEmail: boolean('daily_email').notNull().default(true),
+    /** Last day (YYYY-MM-DD, Tunis) the summary was sent for — so it goes out once. */
+    dailyEmailSentFor: text('daily_email_sent_for'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -640,3 +644,18 @@ export const loyaltyGifts = pgTable(
   },
   (t) => [index('loyalty_gifts_customer_idx').on(t.customerId), index('loyalty_gifts_campaign_idx').on(t.branchId, t.campaignId)],
 );
+
+// ── Emails ──────────────────────────────────────────────────────
+
+/** "Mot de passe oublié": a one-time link sent by email (owners and customers). */
+export const passwordResets = pgTable('password_resets', {
+  id: uuid('id').primaryKey(),
+  /** owner = owner_users, customer = customers. */
+  kind: text('kind', { enum: ['owner', 'customer'] }).notNull(),
+  userId: uuid('user_id').notNull(),
+  /** Only the hash of the link's token is kept. */
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: createdAt(),
+});
