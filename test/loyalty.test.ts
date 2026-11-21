@@ -24,6 +24,21 @@ function receiptCode(key: KeyObject, r: { orderId: string; deviceId: string; rec
 }
 
 describe('receipt codes', () => {
+  it('accepts a code signed by the Flutter POS (same vector as pos-cafe test/features/loyalty_receipt_test.dart)', () => {
+    const publicKey = '6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw';
+    const code =
+      'eyJvIjoiMDE5YTAwMDAtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiZCI6IjAxOWEwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDBkMSIsIm4iOiJUMS0wMDAwNDIiLCJ0IjoxMjUwMCwiYXQiOjE3NjM2NDcyMDB9.o1MNkjIJaP8kUpv4BRmuw_18wpIKDrA6FaEvnZYv3C_juLAI7cgk39GuM6qu2nWOCWVLkR-rqXbmERrOqaYaDg';
+    const p = parseReceiptCode(code)!;
+    expect(p.claim).toEqual({
+      orderId: '019a0000-0000-7000-8000-000000000001',
+      deviceId: '019a0000-0000-7000-8000-0000000000d1',
+      receiptNumber: 'T1-000042',
+      total: 12_500,
+      at: new Date('2025-11-20T14:00:00Z'),
+    });
+    expect(verifyReceiptSignature(publicKey, p.payload, p.signature)).toBe(true);
+  });
+
   it('a signed code verifies; a changed total does not', () => {
     const k = posKeys();
     const code = receiptCode(k.privateKey, { orderId: v7(), deviceId: v7(), receiptNumber: 'T1-000001', total: 12_500 });
