@@ -648,7 +648,9 @@ type LedgerRow = {
   customerId: string;
   branchId: string;
   points: number;
-  kind: 'earn' | 'redeem' | 'refund';
+  kind: 'earn' | 'redeem' | 'refund' | 'bonus';
+  /** Millimes paid (earn), taken back on refund. */
+  spent?: number;
   orderId: string | null;
   receiptNumber: string | null;
   rewardName: string | null;
@@ -699,7 +701,8 @@ export class FakeLoyaltyRepo implements LoyaltyRepo {
   async orderStatus(orderId: string) {
     return this.sales.orders.find((o) => o.id === orderId)?.status ?? null;
   }
-  async earn(e: { customerId: string; branchId: string; points: number; orderId: string; receiptNumber: string }) {
+  milestoneAwards = new Set<string>();
+  async earn(e: { customerId: string; branchId: string; points: number; spent: number; orderId: string; receiptNumber: string }) {
     if (this.ledger.some((l) => l.orderId === e.orderId && l.kind === 'earn')) return false;
     this.ledger.push({ ...e, kind: 'earn', rewardName: null, createdAt: new Date() });
     return true;
@@ -707,8 +710,22 @@ export class FakeLoyaltyRepo implements LoyaltyRepo {
   takeBack(orderId: string, at: Date) {
     const earn = this.ledger.find((l) => l.orderId === orderId && l.kind === 'earn');
     if (earn && !this.ledger.some((l) => l.orderId === orderId && l.kind === 'refund')) {
-      this.ledger.push({ ...earn, points: -earn.points, kind: 'refund', createdAt: at });
+      this.ledger.push({ ...earn, points: -earn.points, spent: -(earn.spent ?? 0), kind: 'refund', createdAt: at });
     }
+  }
+  async spentBetween(customerId: string, branchId: string, from: Date, to: Date) {
+    return this.ledger
+      .filter((l) => l.customerId === customerId && l.branchId === branchId && l.createdAt >= from && l.createdAt < to)
+      .reduce((s, l) => s + (l.spent ?? 0), 0);
+  }
+  async claimMilestone(customerId: string, branchId: string, milestoneId: string, month: string) {
+    const key = [customerId, branchId, milestoneId, month].join('|');
+    if (this.milestoneAwards.has(key)) return false;
+    this.milestoneAwards.add(key);
+    return true;
+  }
+  async addBonus(e: { customerId: string; branchId: string; points: number; rewardName: string }) {
+    this.ledger.push({ ...e, kind: 'bonus', orderId: null, receiptNumber: null, createdAt: new Date() });
   }
   async balance(customerId: string, branchId: string) {
     return this.ledger.filter((l) => l.customerId === customerId && l.branchId === branchId).reduce((s, l) => s + l.points, 0);
@@ -727,7 +744,7 @@ export class FakeLoyaltyRepo implements LoyaltyRepo {
 
 export class FakeClubRepo implements ClubRepo {
   consents = new Map<string, boolean>();
-  gifts: (GiftRecord & { createdAt: Date; orderId: string | null })[] = [];
+  gifts: (GiftRecord & { createdAt: Date; orderId: string | null; milestoneId?: string | null })[] = [];
   constructor(
     private readonly devices: FakeDevicesRepo,
     private readonly customers: FakeCustomersRepo,
@@ -769,11 +786,11 @@ export class FakeClubRepo implements ClubRepo {
   async optedIn(branchId: string, ids: string[]) {
     return ids.filter((id) => this.consents.get(`${id}|${branchId}`));
   }
-  async createGifts(gifts: (GiftRecord & { createdBy: string })[]) {
+  async createGifts(gifts: (GiftRecord & { createdBy: string | null; milestoneId?: string | null })[]) {
     for (const { createdBy: _c, ...g } of gifts) this.gifts.push({ ...g, createdAt: new Date(), orderId: null });
   }
   async campaigns(branchId: string) {
-    const ids = [...new Set(this.gifts.filter((g) => g.branchId === branchId).map((g) => g.campaignId))];
+    const ids = [...new Set(this.gifts.filter((g) => g.branchId === branchId && !g.milestoneId).map((g) => g.campaignId))];
     return ids.map((id) => {
       const gs = this.gifts.filter((g) => g.campaignId === id);
       return { id, name: gs[0]!.name, kind: gs[0]!.kind, sentAt: gs[0]!.createdAt, expiresAt: gs[0]!.expiresAt, sent: gs.length, used: gs.filter((g) => g.usedAt).length };

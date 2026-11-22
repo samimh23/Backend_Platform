@@ -95,7 +95,7 @@ export interface ClubRepo {
   members(branchId: string): Promise<{ id: string; name: string; visits: number; spent: number; points: number; lastVisit: Date | null }[]>;
   /** Which of [ids] are club members of the branch. */
   optedIn(branchId: string, ids: string[]): Promise<string[]>;
-  createGifts(gifts: (GiftRecord & { createdBy: string })[]): Promise<void>;
+  createGifts(gifts: (GiftRecord & { createdBy: string | null; milestoneId?: string | null })[]): Promise<void>;
   campaigns(branchId: string): Promise<{ id: string; name: string; kind: 'free_product' | 'amount_off'; sentAt: Date; expiresAt: Date; sent: number; used: number }[]>;
   activeGifts(customerId: string, now: Date, branchId?: string): Promise<(GiftRecord & { cafeName: string })[]>;
   gift(id: string): Promise<GiftRecord | null>;
@@ -166,7 +166,7 @@ export class DrizzleClubRepo implements ClubRepo {
     return rows.map((r) => r.id);
   }
 
-  async createGifts(gifts: (GiftRecord & { createdBy: string })[]) {
+  async createGifts(gifts: (GiftRecord & { createdBy: string | null; milestoneId?: string | null })[]) {
     if (gifts.length) await this.db.insert(loyaltyGifts).values(gifts);
   }
 
@@ -182,7 +182,8 @@ export class DrizzleClubRepo implements ClubRepo {
         used: sql<number>`count(${loyaltyGifts.usedAt})::int`,
       })
       .from(loyaltyGifts)
-      .where(eq(loyaltyGifts.branchId, branchId))
+      // Gifts sent by the owner only (milestone gifts are not campaigns).
+      .where(and(eq(loyaltyGifts.branchId, branchId), isNull(loyaltyGifts.milestoneId)))
       .groupBy(loyaltyGifts.campaignId)
       .orderBy(sql`min(${loyaltyGifts.createdAt}) desc`)
       .limit(30);
@@ -313,6 +314,31 @@ export class ClubService {
         });
       }
     }
+  }
+
+  /** A gift earned by reaching a monthly milestone: valid 30 days, used with a code like the others. */
+  async awardGift(
+    customerId: string,
+    branchId: string,
+    g: { name: string; kind: 'free_product' | 'amount_off'; productId: string | null; amount: number | null; milestoneId: string },
+  ) {
+    const now = this.now();
+    await this.repo.createGifts([
+      {
+        id: newId(),
+        campaignId: newId(),
+        branchId,
+        customerId,
+        name: g.name,
+        kind: g.kind,
+        productId: g.productId,
+        amount: g.amount,
+        expiresAt: new Date(now.getTime() + 30 * 86_400_000),
+        usedAt: null,
+        createdBy: null,
+        milestoneId: g.milestoneId,
+      },
+    ]);
   }
 
   /** 🔔 "Votre cadeau expire bientôt" — run every few minutes, once per gift. */

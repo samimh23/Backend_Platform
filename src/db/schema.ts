@@ -468,6 +468,11 @@ export const loyaltyPrograms = pgTable('loyalty_programs', {
   pointsPerDinar: integer('points_per_dinar').notNull().default(1),
   /** [{ id, name, points, kind: free_product | amount_off, productId?, amount? }] */
   rewards: jsonb('rewards').notNull().default(sql`'[]'::jsonb`),
+  /** The café chooses: points on each purchase, monthly milestones, or both. */
+  pointsEnabled: boolean('points_enabled').notNull().default(true),
+  milestonesEnabled: boolean('milestones_enabled').notNull().default(false),
+  /** [{ id, spend (millimes in the month), kind: points | free_product | amount_off, points?, productId?, amount?, name }] */
+  milestones: jsonb('milestones').notNull().default(sql`'[]'::jsonb`),
   updatedAt: updatedAt(),
 });
 
@@ -482,8 +487,10 @@ export const loyaltyLedger = pgTable(
     branchId: uuid('branch_id').notNull(),
     /** + earned, − spent or taken back. */
     points: integer('points').notNull(),
-    /** earn | redeem | refund */
-    kind: text('kind', { enum: ['earn', 'redeem', 'refund'] }).notNull(),
+    /** earn | redeem | refund | bonus (milestone) */
+    kind: text('kind', { enum: ['earn', 'redeem', 'refund', 'bonus'] }).notNull(),
+    /** Millimes paid on the receipt (earn; negative on refund) — for monthly milestones. */
+    spent: integer('spent').notNull().default(0),
     /** The receipt the points come from (earn / refund). One claim per receipt. */
     orderId: uuid('order_id'),
     receiptNumber: text('receipt_number'),
@@ -640,6 +647,8 @@ export const loyaltyGifts = pgTable(
     usedAt: timestamp('used_at', { withTimezone: true }),
     orderId: uuid('order_id'),
     createdBy: uuid('created_by'),
+    /** Earned by reaching a monthly milestone (not sent by the owner). */
+    milestoneId: text('milestone_id'),
     createdAt: createdAt(),
   },
   (t) => [index('loyalty_gifts_customer_idx').on(t.customerId), index('loyalty_gifts_campaign_idx').on(t.branchId, t.campaignId)],
@@ -689,4 +698,20 @@ export const notifications = pgTable(
       .on(t.recipientKind, t.recipientId, t.dedupeKey)
       .where(sql`${t.dedupeKey} is not null`),
   ],
+);
+
+/** A milestone reached in a month: given once per customer, café, milestone and month. */
+export const loyaltyMilestoneAwards = pgTable(
+  'loyalty_milestone_awards',
+  {
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    branchId: uuid('branch_id').notNull(),
+    milestoneId: text('milestone_id').notNull(),
+    /** YYYY-MM, Tunis time. */
+    month: text('month').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.customerId, t.branchId, t.milestoneId, t.month] })],
 );

@@ -127,6 +127,20 @@
       "when": 1795358961041,
       "tag": "0017_charming_groot",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795365275124,
+      "tag": "0018_kind_blacklash",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795365291280,
+      "tag": "0019_backfill_loyalty_spent",
+      "breakpoints": true
     }
   ]
 }

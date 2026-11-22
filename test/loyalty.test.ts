@@ -129,7 +129,7 @@ describe('loyalty', () => {
 
   it('owner turns the program on; the POS knows it (prints the QR); the café shows up in the search once listed', async () => {
     const empty = (await ownerReq('GET', `/v1/owner/branches/${owner.branchId}/loyalty`)).json();
-    expect(empty).toEqual({ enabled: false, pointsPerDinar: 1, rewards: [] });
+    expect(empty).toEqual({ enabled: false, pointsEnabled: true, pointsPerDinar: 1, rewards: [], milestonesEnabled: false, milestones: [] });
 
     const saved = (await ownerReq('PUT', `/v1/owner/branches/${owner.branchId}/loyalty`, program)).json();
     expect(saved.rewards).toHaveLength(2);
@@ -172,7 +172,7 @@ describe('loyalty', () => {
     const t2 = await paidTicket(800, 'T1-000002'); // 0.800 DT × 2 → 1 point
 
     const c1 = await asCustomer('POST', '/v1/customer/claims', { code: t1.code });
-    expect(c1.json()).toEqual({ cafeId: owner.branchId, cafeName: 'Kahwet Sami', receiptNumber: 'T1-000001', points: 25, balance: 25 });
+    expect(c1.json()).toEqual({ cafeId: owner.branchId, cafeName: 'Kahwet Sami', receiptNumber: 'T1-000001', points: 25, balance: 25, bonuses: [] });
     expect((await asCustomer('POST', '/v1/customer/claims', { code: t2.code })).json().balance).toBe(26);
 
     const again = await asCustomer('POST', '/v1/customer/claims', { code: t1.code });

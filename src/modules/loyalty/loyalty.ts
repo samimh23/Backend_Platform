@@ -1,14 +1,17 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type, type Static } from '@sinclair/typebox';
-import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, lt, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { branches, devices, loyaltyLedger, loyaltyPrograms, salesOrders, tenants } from '../../db/schema.js';
+import { branches, devices, loyaltyLedger, loyaltyMilestoneAwards, loyaltyPrograms, salesOrders, tenants } from '../../db/schema.js';
 import { AppError, Errors } from '../../shared/errors.js';
 import { newId } from '../../shared/ids.js';
 import { parseReceiptCode, verifyReceiptSignature } from '../../shared/receipts.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { CustomerContext } from '../customers/customers.js';
 import type { NotificationsService } from '../notifications/notifications.js';
+import { dt } from '../notifications/sales-notices.js';
+import { todayInTunis } from '../sales/sales.service.js';
+import type { ClubService } from './club.js';
 
 // ── Schema ──────────────────────────────────────────────────────
 
@@ -27,18 +30,41 @@ const Reward = Type.Object(
 );
 export type Reward = Static<typeof Reward> & { id: string };
 
+/** "Spend 100 DT in the month → get …": automatic, once per month. */
+const Milestone = Type.Object(
+  {
+    id: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
+    /** Millimes spent in the month (Tunis calendar month). */
+    spend: Type.Integer({ minimum: 1000, maximum: 100_000_000 }),
+    kind: Type.Union([Type.Literal('points'), Type.Literal('free_product'), Type.Literal('amount_off')]),
+    points: Type.Optional(Type.Integer({ minimum: 1, maximum: 100_000 })),
+    productId: Type.Optional(Type.String({ maxLength: 60 })),
+    amount: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+    /** What the customer gets, as they see it ("Un express offert"). */
+    name: Type.Optional(Type.String({ maxLength: 60 })),
+  },
+  { additionalProperties: false },
+);
+export type Milestone = Static<typeof Milestone> & { id: string; name: string };
+
 export const LoyaltyProgramView = Type.Object({
   enabled: Type.Boolean(),
+  pointsEnabled: Type.Boolean(),
   pointsPerDinar: Type.Integer(),
   rewards: Type.Array(Reward),
+  milestonesEnabled: Type.Boolean(),
+  milestones: Type.Array(Milestone),
 });
 export type LoyaltyProgramView = Static<typeof LoyaltyProgramView>;
 
 export const SaveProgramBody = Type.Object(
   {
     enabled: Type.Boolean(),
+    pointsEnabled: Type.Optional(Type.Boolean()),
     pointsPerDinar: Type.Integer({ minimum: 1, maximum: 100 }),
     rewards: Type.Array(Reward, { maxItems: 20 }),
+    milestonesEnabled: Type.Optional(Type.Boolean()),
+    milestones: Type.Optional(Type.Array(Milestone, { maxItems: 10 })),
   },
   { additionalProperties: false },
 );
@@ -53,7 +79,15 @@ const CafeSummary = Type.Object({
   loyalty: Type.Boolean(),
   pointsPerDinar: Type.Integer(),
 });
-const CafeDetail = Type.Composite([CafeSummary, Type.Object({ phone: Type.Union([Type.String(), Type.Null()]), rewards: Type.Array(Reward) })]);
+const CafeDetail = Type.Composite([
+  CafeSummary,
+  Type.Object({
+    phone: Type.Union([Type.String(), Type.Null()]),
+    rewards: Type.Array(Reward),
+    /** Monthly milestones of the café (empty when it doesn't use them). */
+    milestones: Type.Array(Milestone),
+  }),
+]);
 
 const ClaimBody = Type.Object(
   {
@@ -69,6 +103,8 @@ const ClaimResult = Type.Object({
   receiptNumber: Type.String(),
   points: Type.Integer(),
   balance: Type.Integer(),
+  /** Milestones this receipt reached ("+50 points", "Un express offert"). */
+  bonuses: Type.Array(Type.String()),
 });
 
 const Balance = Type.Object({
@@ -91,6 +127,8 @@ const MyCafe = Type.Composite([
   Type.Object({
     balance: Type.Integer(),
     history: Type.Array(LedgerEntry),
+    /** Millimes paid here this month (scanned receipts) — for the milestones. */
+    monthSpent: Type.Integer(),
     /** Member of the café's club (shares name and visits, receives gifts). */
     optIn: Type.Boolean(),
     gifts: Type.Array(
@@ -121,7 +159,12 @@ export interface LoyaltyRepo {
   device(id: string): Promise<{ branchId: string; publicKey: string; disabled: boolean } | null>;
   orderStatus(orderId: string): Promise<string | null>;
   /** false when this receipt was already claimed. */
-  earn(e: { customerId: string; branchId: string; points: number; orderId: string; receiptNumber: string }): Promise<boolean>;
+  earn(e: { customerId: string; branchId: string; points: number; spent: number; orderId: string; receiptNumber: string }): Promise<boolean>;
+  /** Millimes paid between [from, to) on scanned receipts (refunds taken off). */
+  spentBetween(customerId: string, branchId: string, from: Date, to: Date): Promise<number>;
+  /** Records a milestone reached this month; false if it was already given. */
+  claimMilestone(customerId: string, branchId: string, milestoneId: string, month: string): Promise<boolean>;
+  addBonus(e: { customerId: string; branchId: string; points: number; rewardName: string }): Promise<void>;
   balance(customerId: string, branchId: string): Promise<number>;
   balances(customerId: string): Promise<{ branchId: string; balance: number }[]>;
   history(customerId: string, branchId: string): Promise<{ points: number; kind: string; receiptNumber: string | null; rewardName: string | null; createdAt: Date }[]>;
@@ -138,8 +181,34 @@ const cafeColumns = {
   listed: branches.listed,
 };
 
-const toProgram = (p: { enabled: boolean; pointsPerDinar: number; rewards: unknown } | null | undefined): LoyaltyProgramView | null =>
-  p ? { enabled: p.enabled, pointsPerDinar: p.pointsPerDinar, rewards: (p.rewards ?? []) as Reward[] } : null;
+type ProgramRow = {
+  enabled: boolean;
+  pointsPerDinar: number;
+  rewards: unknown;
+  pointsEnabled?: boolean | null;
+  milestonesEnabled?: boolean | null;
+  milestones?: unknown;
+};
+const toProgram = (p: ProgramRow | null | undefined): LoyaltyProgramView | null =>
+  p
+    ? {
+        enabled: p.enabled,
+        pointsEnabled: p.pointsEnabled ?? true,
+        pointsPerDinar: p.pointsPerDinar,
+        rewards: (p.rewards ?? []) as Reward[],
+        milestonesEnabled: p.milestonesEnabled ?? false,
+        milestones: (p.milestones ?? []) as Milestone[],
+      }
+    : null;
+
+/** The Tunis calendar month of [now]: "2026-11" and its bounds. */
+export function tunisMonth(now: Date) {
+  const month = todayInTunis(now).slice(0, 7);
+  const [y, m] = month.split('-').map(Number) as [number, number];
+  const from = new Date(Date.UTC(y, m - 1, 1) - 3600_000);
+  const to = new Date(Date.UTC(y, m, 1) - 3600_000);
+  return { month, from, to };
+}
 
 export class DrizzleLoyaltyRepo implements LoyaltyRepo {
   constructor(private readonly db: Db) {}
@@ -147,7 +216,15 @@ export class DrizzleLoyaltyRepo implements LoyaltyRepo {
   async listCafes(q: string | null) {
     const like = q ? `%${q.replace(/[%_]/g, '')}%` : null;
     const rows = await this.db
-      .select({ ...cafeColumns, enabled: loyaltyPrograms.enabled, pointsPerDinar: loyaltyPrograms.pointsPerDinar, rewards: loyaltyPrograms.rewards })
+      .select({
+        ...cafeColumns,
+        enabled: loyaltyPrograms.enabled,
+        pointsPerDinar: loyaltyPrograms.pointsPerDinar,
+        rewards: loyaltyPrograms.rewards,
+        pointsEnabled: loyaltyPrograms.pointsEnabled,
+        milestonesEnabled: loyaltyPrograms.milestonesEnabled,
+        milestones: loyaltyPrograms.milestones,
+      })
       .from(branches)
       .innerJoin(tenants, eq(tenants.id, branches.tenantId))
       .leftJoin(loyaltyPrograms, eq(loyaltyPrograms.branchId, branches.id))
@@ -158,9 +235,10 @@ export class DrizzleLoyaltyRepo implements LoyaltyRepo {
       )
       .orderBy(branches.name)
       .limit(100);
-    return rows.map(({ enabled, pointsPerDinar, rewards, ...c }) => ({
+    return rows.map(({ enabled, pointsPerDinar, rewards, pointsEnabled, milestonesEnabled, milestones, ...c }) => ({
       ...c,
-      program: enabled === null ? null : toProgram({ enabled, pointsPerDinar: pointsPerDinar!, rewards }),
+      program:
+        enabled === null ? null : toProgram({ enabled, pointsPerDinar: pointsPerDinar!, rewards, pointsEnabled, milestonesEnabled, milestones }),
     }));
   }
 
@@ -194,13 +272,41 @@ export class DrizzleLoyaltyRepo implements LoyaltyRepo {
     return o?.status ?? null;
   }
 
-  async earn(e: { customerId: string; branchId: string; points: number; orderId: string; receiptNumber: string }) {
+  async earn(e: { customerId: string; branchId: string; points: number; spent: number; orderId: string; receiptNumber: string }) {
     const rows = await this.db
       .insert(loyaltyLedger)
       .values({ id: newId(), kind: 'earn', ...e })
       .onConflictDoNothing()
       .returning({ id: loyaltyLedger.id });
     return rows.length === 1;
+  }
+
+  async spentBetween(customerId: string, branchId: string, from: Date, to: Date) {
+    const [r] = await this.db
+      .select({ n: sql<number>`coalesce(sum(${loyaltyLedger.spent}), 0)::int` })
+      .from(loyaltyLedger)
+      .where(
+        and(
+          eq(loyaltyLedger.customerId, customerId),
+          eq(loyaltyLedger.branchId, branchId),
+          gte(loyaltyLedger.createdAt, from),
+          lt(loyaltyLedger.createdAt, to),
+        ),
+      );
+    return Number(r?.n ?? 0);
+  }
+
+  async claimMilestone(customerId: string, branchId: string, milestoneId: string, month: string) {
+    const rows = await this.db
+      .insert(loyaltyMilestoneAwards)
+      .values({ customerId, branchId, milestoneId, month })
+      .onConflictDoNothing()
+      .returning({ m: loyaltyMilestoneAwards.month });
+    return rows.length === 1;
+  }
+
+  async addBonus(e: { customerId: string; branchId: string; points: number; rewardName: string }) {
+    await this.db.insert(loyaltyLedger).values({ id: newId(), kind: 'bonus', ...e });
   }
 
   async balance(customerId: string, branchId: string) {
@@ -256,6 +362,7 @@ export class LoyaltyService {
     private readonly repo: LoyaltyRepo,
     private readonly now: () => Date = () => new Date(),
     private readonly notify?: NotificationsService,
+    private readonly club?: ClubService,
   ) {}
 
   // Public: the café directory
@@ -268,13 +375,22 @@ export class LoyaltyService {
     const c = await this.repo.cafe(branchId);
     if (!c?.listed) throw LoyaltyErrors.cafeNotFound();
     const p = await this.repo.program(branchId);
-    return { ...this.summary(c, p), phone: c.phone, rewards: p?.enabled ? p.rewards : [] };
+    return { ...this.summary(c, p), phone: c.phone, ...this.offer(p) };
   }
 
   // Owner: the program
   async getProgram(owner: OwnerContext, branchId: string): Promise<LoyaltyProgramView> {
     await this.ownedBranch(owner, branchId);
-    return (await this.repo.program(branchId)) ?? { enabled: false, pointsPerDinar: 1, rewards: [] };
+    return (
+      (await this.repo.program(branchId)) ?? {
+        enabled: false,
+        pointsEnabled: true,
+        pointsPerDinar: 1,
+        rewards: [],
+        milestonesEnabled: false,
+        milestones: [],
+      }
+    );
   }
 
   async saveProgram(owner: OwnerContext, branchId: string, body: SaveProgramBody): Promise<LoyaltyProgramView> {
@@ -291,7 +407,34 @@ export class LoyaltyService {
         ...(r.kind === 'free_product' ? { productId: r.productId } : { amount: r.amount }),
       };
     });
-    const p = { enabled: body.enabled, pointsPerDinar: body.pointsPerDinar, rewards };
+    const milestones = (body.milestones ?? [])
+      .map((m) => {
+        if (m.kind === 'points' && !m.points) throw LoyaltyErrors.invalidReward(`Palier ${dt(m.spend)} : nombre de points manquant`);
+        if (m.kind === 'amount_off' && !m.amount) throw LoyaltyErrors.invalidReward(`Palier ${dt(m.spend)} : montant manquant`);
+        if (m.kind === 'free_product' && !m.productId) throw LoyaltyErrors.invalidReward(`Palier ${dt(m.spend)} : produit manquant`);
+        const name =
+          m.name?.trim() ||
+          (m.kind === 'points' ? `+${m.points} points` : m.kind === 'amount_off' ? `${dt(m.amount!)} offerts` : 'Un produit offert');
+        return {
+          id: m.id ?? newId(),
+          spend: m.spend,
+          kind: m.kind,
+          name,
+          ...(m.kind === 'points' ? { points: m.points } : m.kind === 'free_product' ? { productId: m.productId } : { amount: m.amount }),
+        };
+      })
+      .sort((a, b) => a.spend - b.spend);
+    const p: LoyaltyProgramView = {
+      enabled: body.enabled,
+      pointsEnabled: body.pointsEnabled ?? true,
+      pointsPerDinar: body.pointsPerDinar,
+      rewards,
+      milestonesEnabled: body.milestonesEnabled ?? false,
+      milestones,
+    };
+    if (p.enabled && !p.pointsEnabled && !p.milestonesEnabled) {
+      throw LoyaltyErrors.invalidReward('Choisissez au moins un système : les points ou les paliers');
+    }
     await this.repo.saveProgram(branchId, p);
     return p;
   }
@@ -311,21 +454,23 @@ export class LoyaltyService {
     if (!program?.enabled) throw LoyaltyErrors.loyaltyDisabled();
     if ((await this.repo.orderStatus(claim.orderId)) === 'refunded') throw LoyaltyErrors.receiptRefunded();
 
-    const points = Math.floor((claim.total * program.pointsPerDinar) / 1000);
+    const points = program.pointsEnabled ? Math.floor((claim.total * program.pointsPerDinar) / 1000) : 0;
     const ok = await this.repo.earn({
       customerId: ctx.customerId,
       branchId: device.branchId,
       points,
+      spent: claim.total,
       orderId: claim.orderId,
       receiptNumber: claim.receiptNumber,
     });
     if (!ok) throw LoyaltyErrors.receiptClaimed();
     const cafe = await this.repo.cafe(device.branchId);
+    const bonuses = await this.milestonesReached(ctx.customerId, device.branchId, cafe?.name ?? 'votre café', program, claim.total);
     const balance = await this.repo.balance(ctx.customerId, device.branchId);
 
     // 🔔 The points, and any reward this ticket just put within reach.
     const link = `/app/cafes/${device.branchId}`;
-    await this.notify?.customer(ctx.customerId, {
+    if (points > 0) await this.notify?.customer(ctx.customerId, {
       kind: 'points',
       branchId: device.branchId,
       title: `+${points} points chez ${cafe?.name ?? 'votre café'}`,
@@ -333,7 +478,8 @@ export class LoyaltyService {
       link,
       dedupeKey: `points:${claim.orderId}`,
     });
-    for (const r of program.rewards.filter((r) => r.points > balance - points && r.points <= balance)) {
+    const rewards = program.pointsEnabled ? program.rewards : [];
+    for (const r of rewards.filter((r) => r.points > balance - points && r.points <= balance)) {
       await this.notify?.customer(ctx.customerId, {
         kind: 'reward_ready',
         branchId: device.branchId,
@@ -349,6 +495,58 @@ export class LoyaltyService {
       receiptNumber: claim.receiptNumber,
       points,
       balance,
+      bonuses,
+    };
+  }
+
+  /**
+   * Monthly milestones this receipt just reached (spent before < milestone ≤ spent after),
+   * each given once a month: bonus points, or a gift used with a code at the POS.
+   */
+  private async milestonesReached(
+    customerId: string,
+    branchId: string,
+    cafeName: string,
+    program: LoyaltyProgramView,
+    total: number,
+  ): Promise<string[]> {
+    if (!program.milestonesEnabled || program.milestones.length === 0) return [];
+    const { month, from, to } = tunisMonth(this.now());
+    const after = await this.repo.spentBetween(customerId, branchId, from, to);
+    const before = after - total;
+    const out: string[] = [];
+    // Saved milestones always have their id and name (saveProgram gives them).
+    for (const m of (program.milestones as Milestone[]).filter((m) => m.spend > before && m.spend <= after)) {
+      if (!(await this.repo.claimMilestone(customerId, branchId, m.id, month))) continue;
+      if (m.kind === 'points') {
+        await this.repo.addBonus({ customerId, branchId, points: m.points!, rewardName: `Palier ${dt(m.spend)}` });
+      } else {
+        await this.club?.awardGift(customerId, branchId, {
+          name: m.name,
+          kind: m.kind,
+          productId: m.productId ?? null,
+          amount: m.amount ?? null,
+          milestoneId: m.id,
+        });
+      }
+      out.push(m.name);
+      await this.notify?.customer(customerId, {
+        kind: 'milestone',
+        branchId,
+        title: `Palier atteint chez ${cafeName} 🎉`,
+        body: `${dt(m.spend)} ce mois-ci → ${m.name}${m.kind === 'points' ? '' : ' (dans vos cadeaux)'}.`,
+        link: `/app/cafes/${branchId}`,
+        dedupeKey: `milestone:${m.id}:${month}`,
+      });
+    }
+    return out;
+  }
+
+  /** What the café offers, as customers see it. */
+  private offer(p: LoyaltyProgramView | null) {
+    return {
+      rewards: p?.enabled && p.pointsEnabled ? p.rewards : [],
+      milestones: p?.enabled && p.milestonesEnabled ? p.milestones : [],
     };
   }
 
@@ -362,7 +560,7 @@ export class LoyaltyService {
         cafeName: cafe.name,
         city: cafe.city,
         balance: b.balance,
-        rewardsAvailable: program?.enabled ? program.rewards.filter((r) => r.points <= b.balance).length : 0,
+        rewardsAvailable: program?.enabled && program.pointsEnabled ? program.rewards.filter((r) => r.points <= b.balance).length : 0,
       });
     }
     return out.sort((a, b) => b.balance - a.balance);
@@ -375,10 +573,12 @@ export class LoyaltyService {
     const history = await this.repo.history(ctx.customerId, branchId);
     // A café the customer has points in stays visible to them even if it is not listed.
     if (!c.listed && history.length === 0) throw LoyaltyErrors.cafeNotFound();
+    const { from, to } = tunisMonth(this.now());
     return {
       ...this.summary(c, p),
       phone: c.phone,
-      rewards: p?.enabled ? p.rewards : [],
+      ...this.offer(p),
+      monthSpent: await this.repo.spentBetween(ctx.customerId, branchId, from, to),
       balance: await this.repo.balance(ctx.customerId, branchId),
       history: history.map((h) => ({ ...h, at: h.createdAt.toISOString(), createdAt: undefined })),
     };
@@ -392,7 +592,7 @@ export class LoyaltyService {
       city: c.city,
       address: c.address,
       loyalty: p?.enabled ?? false,
-      pointsPerDinar: p?.pointsPerDinar ?? 0,
+      pointsPerDinar: p?.enabled && p.pointsEnabled ? p.pointsPerDinar : 0,
     };
   }
 
