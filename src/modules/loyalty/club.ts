@@ -1,12 +1,13 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type, type Static } from '@sinclair/typebox';
-import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { branches, customerCafes, loyaltyGifts } from '../../db/schema.js';
+import { branches, customerCafes, customers, loyaltyGifts } from '../../db/schema.js';
 import { AppError, Errors } from '../../shared/errors.js';
 import { newId } from '../../shared/ids.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { CustomerContext } from '../customers/customers.js';
+import type { NotificationsService } from '../notifications/notifications.js';
 
 /**
  * The café's club: a customer who joins (their choice, off by default) shares their
@@ -98,6 +99,10 @@ export interface ClubRepo {
   campaigns(branchId: string): Promise<{ id: string; name: string; kind: 'free_product' | 'amount_off'; sentAt: Date; expiresAt: Date; sent: number; used: number }[]>;
   activeGifts(customerId: string, now: Date, branchId?: string): Promise<(GiftRecord & { cafeName: string })[]>;
   gift(id: string): Promise<GiftRecord | null>;
+  branchName(branchId: string): Promise<string | null>;
+  customerName(customerId: string): Promise<string | null>;
+  /** Unused gifts expiring before [before] (still valid now). */
+  giftsExpiring(now: Date, before: Date): Promise<(GiftRecord & { cafeName: string })[]>;
 }
 
 export class DrizzleClubRepo implements ClubRepo {
@@ -211,6 +216,37 @@ export class DrizzleClubRepo implements ClubRepo {
       .orderBy(loyaltyGifts.expiresAt);
   }
 
+  async branchName(branchId: string) {
+    const [b] = await this.db.select({ name: branches.name }).from(branches).where(eq(branches.id, branchId));
+    return b?.name ?? null;
+  }
+
+  async customerName(customerId: string) {
+    const [c] = await this.db.select({ name: customers.name }).from(customers).where(eq(customers.id, customerId));
+    return c?.name ?? null;
+  }
+
+  async giftsExpiring(now: Date, before: Date) {
+    const rows = await this.db
+      .select({
+        id: loyaltyGifts.id,
+        campaignId: loyaltyGifts.campaignId,
+        branchId: loyaltyGifts.branchId,
+        customerId: loyaltyGifts.customerId,
+        name: loyaltyGifts.name,
+        kind: loyaltyGifts.kind,
+        productId: loyaltyGifts.productId,
+        amount: loyaltyGifts.amount,
+        expiresAt: loyaltyGifts.expiresAt,
+        usedAt: loyaltyGifts.usedAt,
+        cafeName: branches.name,
+      })
+      .from(loyaltyGifts)
+      .innerJoin(branches, eq(branches.id, loyaltyGifts.branchId))
+      .where(and(isNull(loyaltyGifts.usedAt), gt(loyaltyGifts.expiresAt, now), lt(loyaltyGifts.expiresAt, before)));
+    return rows;
+  }
+
   async gift(id: string) {
     const [g] = await this.db
       .select({
@@ -249,15 +285,51 @@ const giftView = (g: GiftRecord & { cafeName: string }): GiftView => ({
   expiresAt: g.expiresAt.toISOString(),
 });
 
+const untilDay = (d: Date) =>
+  new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', timeZone: 'Africa/Tunis' }).format(d);
+
 export class ClubService {
   constructor(
     private readonly repo: ClubRepo,
     private readonly now: () => Date = () => new Date(),
+    private readonly notify?: NotificationsService,
   ) {}
 
   // Customer
-  setOptIn(ctx: CustomerContext, branchId: string, optIn: boolean) {
-    return this.repo.setOptIn(ctx.customerId, branchId, optIn, this.now());
+  async setOptIn(ctx: CustomerContext, branchId: string, optIn: boolean) {
+    const before = await this.repo.optIn(ctx.customerId, branchId);
+    await this.repo.setOptIn(ctx.customerId, branchId, optIn, this.now());
+    if (optIn && !before) {
+      // 🔔 The owner: a new club member (once per customer).
+      const [tenantId, name] = await Promise.all([this.repo.branchTenant(branchId), this.repo.customerName(ctx.customerId)]);
+      if (tenantId) {
+        await this.notify?.owners(tenantId, {
+          kind: 'club_joined',
+          branchId,
+          title: 'Nouveau membre du club',
+          body: `${name ?? 'Un client'} a rejoint le club. Vous pouvez lui envoyer un cadeau.`,
+          link: '/owner/customers',
+          dedupeKey: `club:${ctx.customerId}:${branchId}`,
+        });
+      }
+    }
+  }
+
+  /** 🔔 "Votre cadeau expire bientôt" — run every few minutes, once per gift. */
+  async remindExpiringGifts(): Promise<number> {
+    const now = this.now();
+    const gifts = await this.repo.giftsExpiring(now, new Date(now.getTime() + 24 * 3600_000));
+    for (const g of gifts) {
+      await this.notify?.customer(g.customerId, {
+        kind: 'gift_expiring',
+        branchId: g.branchId,
+        title: 'Votre cadeau expire bientôt',
+        body: `${g.name} chez ${g.cafeName} · à utiliser avant le ${untilDay(g.expiresAt)}.`,
+        link: `/app/cafes/${g.branchId}`,
+        dedupeKey: `gift-expiring:${g.id}`,
+      });
+    }
+    return gifts.length;
   }
 
   optIn(ctx: CustomerContext, branchId: string) {
@@ -300,9 +372,10 @@ export class ClubService {
     const now = this.now();
     const campaignId = newId();
     const expiresAt = new Date(now.getTime() + body.validDays * 86_400_000);
+    const gifts = members.map((customerId) => ({ customerId, id: newId() }));
     await this.repo.createGifts(
-      members.map((customerId) => ({
-        id: newId(),
+      gifts.map(({ customerId, id }) => ({
+        id,
         campaignId,
         branchId,
         customerId,
@@ -315,6 +388,18 @@ export class ClubService {
         createdBy: owner.userId,
       })),
     );
+    // 🔔 Each member: the gift.
+    const cafe = (await this.repo.branchName(branchId)) ?? 'Votre café';
+    for (const g of gifts) {
+      await this.notify?.customer(g.customerId, {
+        kind: 'gift',
+        branchId,
+        title: `🎁 Cadeau de ${cafe}`,
+        body: `${name} · valable jusqu’au ${untilDay(expiresAt)}.`,
+        link: `/app/cafes/${branchId}`,
+        dedupeKey: `gift:${g.id}`,
+      });
+    }
     return { campaignId, sent: members.length, skipped: body.customerIds.length - members.length };
   }
 

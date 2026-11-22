@@ -1,8 +1,11 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { cashMovements, cashSessions, salesOrderLines, salesOrders, salesPayments } from '../../db/schema.js';
+import { cashMovements, cashSessions, devices, salesOrderLines, salesOrders, salesPayments } from '../../db/schema.js';
 import type { DeviceContext } from '../devices/devices.service.js';
-import { consumeForOrder } from '../stock/stock.js';
+import { notifyOwnersSql } from '../notifications/notifications.js';
+import { ownerNotices, stockLowNotice, type NoticeLookup } from '../notifications/sales-notices.js';
+import { consumeForOrder, type CrossedLow } from '../stock/stock.js';
+import { todayInTunis } from './sales.service.js';
 import type { ProjectionOp } from './sales.projection.js';
 
 /** A Drizzle transaction (or the db itself). */
@@ -10,6 +13,7 @@ export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 /** Executes projection operations. Called inside the sync transaction. */
 export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: ProjectionOp[]): Promise<void> {
+  const lowStock: CrossedLow[] = [];
   for (const op of ops) {
     switch (op.kind) {
       case 'openOrder':
@@ -113,7 +117,7 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
           })
           .where(eq(salesOrders.id, op.orderId));
         // Paid: its ingredients leave the stock.
-        await consumeForOrder(tx, { orderId: op.orderId, branchId: ctx.branchId });
+        lowStock.push(...(await consumeForOrder(tx, { orderId: op.orderId, branchId: ctx.branchId })));
         break;
 
       case 'cancelOrder':
@@ -151,4 +155,37 @@ export async function applyProjection(tx: Tx, ctx: DeviceContext, ops: Projectio
         break;
     }
   }
+
+  // 🔔 What the owner should know about (same transaction: no notice without its data).
+  const day = todayInTunis(new Date());
+  const notices = [
+    ...(await ownerNotices(ops, ctx.branchId, drizzleLookup(tx))),
+    ...lowStock.map((i) => stockLowNotice(i, ctx.branchId, day)),
+  ];
+  for (const n of notices) await notifyOwnersSql(tx, ctx.tenantId, n);
+}
+
+function drizzleLookup(tx: Tx): NoticeLookup {
+  return {
+    async line(lineId) {
+      const [l] = await tx
+        .select({ name: salesOrderLines.name, qty: salesOrderLines.qty, orderId: salesOrderLines.orderId, receiptNumber: salesOrders.receiptNumber })
+        .from(salesOrderLines)
+        .innerJoin(salesOrders, eq(salesOrders.id, salesOrderLines.orderId))
+        .where(eq(salesOrderLines.id, lineId));
+      return l ?? null;
+    },
+    async receiptNumber(orderId) {
+      const [o] = await tx.select({ n: salesOrders.receiptNumber }).from(salesOrders).where(eq(salesOrders.id, orderId));
+      return o?.n ?? null;
+    },
+    async drawerCode(sessionId) {
+      const [d] = await tx
+        .select({ code: devices.code })
+        .from(cashSessions)
+        .innerJoin(devices, eq(devices.id, cashSessions.drawerDeviceId))
+        .where(eq(cashSessions.id, sessionId));
+      return d?.code ?? null;
+    },
+  };
 }

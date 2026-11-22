@@ -39,6 +39,7 @@ import { SyncService } from './modules/sync/sync.service.js';
 import { DailySummaryService, dailySummaryRoutes, DrizzleDailySummaryRepo, type DailySummaryRepo } from './modules/mail/daily-summary.js';
 import { FileMailer, type Mailer } from './modules/mail/mailer.js';
 import { DrizzlePasswordResetRepo, PasswordResetService, passwordResetRoutes, type PasswordResetRepo } from './modules/mail/password-reset.js';
+import { DrizzleNotificationsRepo, NotificationsService, notificationRoutes, type NotificationsRepo } from './modules/notifications/notifications.js';
 import { registerErrorHandler } from './plugins/errors.js';
 import { Argon2Hasher, type PasswordHasher } from './shared/passwords.js';
 import { CustomerTokenService, TokenService } from './shared/tokens.js';
@@ -56,6 +57,7 @@ export interface Services {
   devices: DevicesService;
   floor: FloorService;
   loyalty: LoyaltyService;
+  notifications: NotificationsService;
   passwordResets: PasswordResetService;
   redemptions: RedemptionsService;
   sales: SalesService;
@@ -94,6 +96,7 @@ export interface Repos {
   devices: DevicesRepo;
   floor: FloorRepo;
   loyalty: LoyaltyRepo;
+  notifications: NotificationsRepo;
   passwordResets: PasswordResetRepo;
   redemptions: RedemptionsRepo;
   sales: SalesRepo;
@@ -115,6 +118,7 @@ export function reposFromDb(db: Db): Repos {
     devices: new DrizzleDevicesRepo(db),
     floor: new DrizzleFloorRepo(db),
     loyalty: new DrizzleLoyaltyRepo(db),
+    notifications: new DrizzleNotificationsRepo(db),
     passwordResets: new DrizzlePasswordResetRepo(db),
     redemptions: new DrizzleRedemptionsRepo(db),
     sales: new DrizzleSalesRepo(db),
@@ -148,9 +152,10 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher,
 
   const tokens = new TokenService(auth.jwtSecret, auth.accessTtlMinutes * 60);
   const passwords = passwordHasher ?? new Argon2Hasher();
-  const club = new ClubService(repos.club);
   const mail = mailer ?? new FileMailer('.mail-outbox', (m) => app.log.info(m));
   const logError = (msg: string, err?: unknown) => app.log.error({ err }, msg);
+  const notifications = new NotificationsService(repos.notifications, logError);
+  const club = new ClubService(repos.club, undefined, notifications);
   const sales = new SalesService(repos.sales);
   const stock = new StockService(repos.stock);
   const services: Services = {
@@ -169,7 +174,8 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher,
     dailySummary: new DailySummaryService(repos.dailySummary, sales, stock, mail, webUrl, logError),
     devices: new DevicesService(repos.devices),
     floor: new FloorService(repos.floor),
-    loyalty: new LoyaltyService(repos.loyalty),
+    loyalty: new LoyaltyService(repos.loyalty, undefined, notifications),
+    notifications,
     passwordResets: new PasswordResetService(repos.passwordResets, mail, passwords, webUrl, logError),
     redemptions: new RedemptionsService(repos.redemptions, repos.loyalty, undefined, undefined, club),
     sales,
@@ -223,6 +229,7 @@ export async function buildApp({ repos, auth, logLevel = 'info', passwordHasher,
   await app.register(clubRoutes);
   await app.register(passwordResetRoutes);
   await app.register(dailySummaryRoutes);
+  await app.register(notificationRoutes);
 
   return app;
 }

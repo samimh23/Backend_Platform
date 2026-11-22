@@ -215,8 +215,11 @@ export class DrizzleStockRepo implements StockRepo {
  * The movement is dated when the stock changed (sync time), not the ticket time: a ticket synced
  * late (POS offline) then still reads right in the history, after what was entered before it.
  */
-export async function consumeForOrder(tx: { execute: Db['execute'] }, o: { orderId: string; branchId: string }): Promise<void> {
-  await tx.execute(sql`
+export async function consumeForOrder(
+  tx: { execute: Db['execute'] },
+  o: { orderId: string; branchId: string },
+): Promise<CrossedLow[]> {
+  const rows = await tx.execute<{ id: string; name: string; unit: StockItemRecord['unit']; quantity: number; low_threshold: number; delta: number }>(sql`
     with used as (
       select r.stock_item_id, sum(l.qty * r.qty)::int as n
       from sales_order_lines l
@@ -232,8 +235,25 @@ export async function consumeForOrder(tx: { execute: Db['execute'] }, o: { order
       returning stock_item_id, delta
     )
     update stock_items s set quantity = s.quantity + m.delta, updated_at = now()
-    from moved m where s.id = m.stock_item_id`);
+    from moved m where s.id = m.stock_item_id
+    returning s.id, s.name, s.unit, s.quantity, s.low_threshold, m.delta, s.archived`);
+  // Only the ones this ticket pushed at or under their alert level (not already low before).
+  return [...rows]
+    .filter((r) => r.low_threshold !== null && !(r as { archived?: boolean }).archived)
+    .map((r) => ({ id: r.id, name: r.name, unit: r.unit, quantity: Number(r.quantity), lowThreshold: Number(r.low_threshold), delta: Number(r.delta) }))
+    .filter((r) => crossedLow(r.quantity - r.delta, r.quantity, r.lowThreshold));
 }
+
+/** An ingredient a sale just pushed at or under its alert level. */
+export interface CrossedLow {
+  id: string;
+  name: string;
+  unit: StockItemRecord['unit'];
+  quantity: number;
+  lowThreshold: number;
+}
+
+export const crossedLow = (before: number, after: number, threshold: number) => before > threshold && after <= threshold;
 
 // ── Service ─────────────────────────────────────────────────────
 

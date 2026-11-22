@@ -659,3 +659,34 @@ export const passwordResets = pgTable('password_resets', {
   usedAt: timestamp('used_at', { withTimezone: true }),
   createdAt: createdAt(),
 });
+
+/**
+ * The 🔔 of the owner area and of the client app. Owner notifications are copied to every
+ * owner/manager of the business (each has their own read state).
+ */
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey(),
+    /** owner = owner_users, customer = customers. */
+    recipientKind: text('recipient_kind', { enum: ['owner', 'customer'] }).notNull(),
+    recipientId: uuid('recipient_id').notNull(),
+    branchId: uuid('branch_id'),
+    /** refund, void_after_send, cash_gap, stock_low, club_joined, gift, points, reward_ready, gift_expiring */
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    /** Page to open (in the website). */
+    link: text('link'),
+    /** The same thing is notified only once per person (e.g. one "stock bas" per item per day). */
+    dedupeKey: text('dedupe_key'),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('notifications_recipient_idx').on(t.recipientKind, t.recipientId, t.createdAt),
+    uniqueIndex('notifications_dedupe_idx')
+      .on(t.recipientKind, t.recipientId, t.dedupeKey)
+      .where(sql`${t.dedupeKey} is not null`),
+  ],
+);

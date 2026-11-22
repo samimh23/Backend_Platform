@@ -21,6 +21,10 @@ import type { StockItemRecord, StockRepo } from '../src/modules/stock/stock.js';
 import type { DailySummaryRepo } from '../src/modules/mail/daily-summary.js';
 import { MemoryMailer } from '../src/modules/mail/mailer.js';
 import type { AccountKind, PasswordResetRepo } from '../src/modules/mail/password-reset.js';
+import type { NewNotification, NotificationsRepo, RecipientKind } from '../src/modules/notifications/notifications.js';
+import { ownerNotices, stockLowNotice } from '../src/modules/notifications/sales-notices.js';
+import { todayInTunis } from '../src/modules/sales/sales.service.js';
+import { crossedLow, type CrossedLow } from '../src/modules/stock/stock.js';
 
 /** In-memory repos: test HTTP + services without Postgres. */
 
@@ -161,7 +165,7 @@ export class FakeSyncRepo implements SyncRepo {
     }
     // Same projection as the real repo, applied to the in-memory sales store.
     const { ops, problems } = projectEvents(fresh.sort((a, b) => a.deviceSeq - b.deviceSeq));
-    this.sales.apply(ctx, ops);
+    await this.sales.apply(ctx, ops);
     this.errors.push(...problems.map((p) => ({ eventId: p.eventId, code: 'PROJECTION_SKIPPED', details: { reason: p.reason } })));
     return fresh.map((e) => e.id);
   }
@@ -394,9 +398,32 @@ export class FakeSalesRepo implements SalesRepo {
 
   loyalty?: FakeLoyaltyRepo;
   stock?: FakeStockRepo;
+  notifications?: FakeNotificationsRepo;
+  cashCodes = new Map<string, string>();
   constructor(private readonly devices: FakeDevicesRepo) {}
 
-  apply(ctx: DeviceContext, ops: ProjectionOp[]) {
+  /** Same notices as the real apply (sales.apply.ts). */
+  async apply(ctx: DeviceContext, ops: ProjectionOp[]) {
+    const low = this.applyOps(ctx, ops);
+    const notices = [
+      ...(await ownerNotices(ops, ctx.branchId, {
+        line: async (id) => {
+          const l = this.lines.find((x) => x.id === id);
+          return l ? { name: l.name, qty: l.qty, orderId: l.orderId, receiptNumber: this.orders.find((o) => o.id === l.orderId)?.receiptNumber ?? null } : null;
+        },
+        receiptNumber: async (id) => this.orders.find((o) => o.id === id)?.receiptNumber ?? null,
+        drawerCode: async (sessionId) => {
+          const s = this.cashSessions.find((x) => x.id === sessionId);
+          return s ? (this.devices.devices.find((d) => d.id === s.drawerDeviceId)?.code ?? null) : null;
+        },
+      })),
+      ...low.map((i) => stockLowNotice(i, ctx.branchId, todayInTunis(new Date()))),
+    ];
+    for (const n of notices) await this.notifications?.forOwners(ctx.tenantId, n);
+  }
+
+  private applyOps(ctx: DeviceContext, ops: ProjectionOp[]): CrossedLow[] {
+    const low: CrossedLow[] = [];
     for (const op of ops) {
       const order = 'orderId' in op ? this.orders.find((o) => o.id === op.orderId) : undefined;
       switch (op.kind) {
@@ -454,7 +481,7 @@ export class FakeSalesRepo implements SalesRepo {
           break;
         case 'closeOrder':
           if (order) Object.assign(order, { status: 'paid', closedAt: op.closedAt, total: op.total, itemCount: op.itemCount, receiptNumber: op.receiptNumber });
-          this.stock?.consume(op.orderId, ctx.branchId);
+          low.push(...(this.stock?.consume(op.orderId, ctx.branchId) ?? []));
           break;
         case 'cancelOrder':
           if (order) Object.assign(order, { status: 'cancelled', closedAt: op.closedAt });
@@ -494,6 +521,7 @@ export class FakeSalesRepo implements SalesRepo {
         }
       }
     }
+    return low;
   }
 
   branchTenant(id: string) {
@@ -759,6 +787,50 @@ export class FakeClubRepo implements ClubRepo {
   async gift(id: string) {
     return this.gifts.find((g) => g.id === id) ?? null;
   }
+  async branchName(branchId: string) {
+    return this.auth.branches.find((b) => b.id === branchId)?.name ?? null;
+  }
+  async customerName(customerId: string) {
+    return this.customers.customers.find((c) => c.id === customerId)?.name ?? null;
+  }
+  async giftsExpiring(now: Date, before: Date) {
+    return this.gifts
+      .filter((g) => !g.usedAt && g.expiresAt > now && g.expiresAt < before)
+      .map((g) => ({ ...g, cafeName: this.auth.branches.find((b) => b.id === g.branchId)?.name ?? '' }));
+  }
+}
+
+type FakeNotification = NewNotification & { id: string; recipientKind: RecipientKind; recipientId: string; readAt: Date | null; createdAt: Date };
+
+export class FakeNotificationsRepo implements NotificationsRepo {
+  rows: FakeNotification[] = [];
+  constructor(private readonly auth: FakeAuthRepo) {}
+  private add(recipientKind: RecipientKind, recipientId: string, n: NewNotification) {
+    if (n.dedupeKey && this.rows.some((r) => r.recipientKind === recipientKind && r.recipientId === recipientId && r.dedupeKey === n.dedupeKey)) return;
+    this.rows.push({ ...n, id: v7(), recipientKind, recipientId, readAt: null, createdAt: new Date() });
+  }
+  async forOwners(tenantId: string, n: NewNotification) {
+    for (const u of this.auth.users.filter((x) => x.tenantId === tenantId)) this.add('owner', u.id, n);
+  }
+  async forCustomer(customerId: string, n: NewNotification) {
+    this.add('customer', customerId, n);
+  }
+  private mine(kind: RecipientKind, id: string) {
+    return this.rows.filter((r) => r.recipientKind === kind && r.recipientId === id);
+  }
+  async list(kind: RecipientKind, id: string, limit: number) {
+    return this.mine(kind, id)
+      .slice()
+      .reverse()
+      .slice(0, limit)
+      .map((r) => ({ id: r.id, kind: r.kind, title: r.title, body: r.body, link: r.link ?? null, readAt: r.readAt, createdAt: r.createdAt }));
+  }
+  async unread(kind: RecipientKind, id: string) {
+    return this.mine(kind, id).filter((r) => !r.readAt).length;
+  }
+  async markRead(kind: RecipientKind, id: string, ids: string[] | null, at: Date) {
+    for (const r of this.mine(kind, id)) if (!r.readAt && (!ids || ids.includes(r.id))) r.readAt = at;
+  }
 }
 
 export class FakeRedemptionsRepo implements RedemptionsRepo {
@@ -866,7 +938,8 @@ export class FakeStockRepo implements StockRepo {
     this.recipes = [...this.recipes.filter((r) => r.productId !== productId), ...lines.map((l) => ({ productId, ...l }))];
   }
   /** Same rule as consumeForOrder (SQL): recipes × quantities of the ticket's items, once. */
-  consume(orderId: string, branchId: string) {
+  consume(orderId: string, branchId: string): CrossedLow[] {
+    const crossed: CrossedLow[] = [];
     const used = new Map<string, number>();
     for (const l of this.sales.lines.filter((x) => x.orderId === orderId && !x.voided)) {
       for (const r of this.recipes.filter((x) => x.productId === l.productId)) used.set(r.stockItemId, (used.get(r.stockItemId) ?? 0) + l.qty * r.qty);
@@ -876,7 +949,11 @@ export class FakeStockRepo implements StockRepo {
       if (!i || this.moves.some((m) => m.kind === 'sale' && m.orderId === orderId && m.stockItemId === stockItemId)) continue;
       i.quantity -= n;
       this.moves.push({ stockItemId, kind: 'sale', delta: -n, quantityAfter: i.quantity, note: null, orderId, createdAt: new Date() });
+      if (i.lowThreshold !== null && !i.archived && crossedLow(i.quantity + n, i.quantity, i.lowThreshold)) {
+        crossed.push({ id: i.id, name: i.name, unit: i.unit, quantity: i.quantity, lowThreshold: i.lowThreshold });
+      }
     }
+    return crossed;
   }
 }
 
@@ -957,6 +1034,8 @@ export function fakeRepos() {
   const stock = new FakeStockRepo(devices, catalog, sales);
   sales.stock = stock;
   const passwordResets = new FakePasswordResetRepo(auth, customers);
+  const notifications = new FakeNotificationsRepo(auth);
+  sales.notifications = notifications;
   const dailySummary = new FakeDailySummaryRepo(auth);
   const repos: Repos = {
     health: { ping: async () => {} },
@@ -970,6 +1049,7 @@ export function fakeRepos() {
     devices,
     floor,
     loyalty,
+    notifications,
     passwordResets,
     redemptions,
     sales,
@@ -977,7 +1057,7 @@ export function fakeRepos() {
     stock,
     sync,
   };
-  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock, club, passwordResets, dailySummary };
+  return { repos, devices, sync, auth, catalog, sales, staff, floor, business, customers, loyalty, redemptions, stock, club, passwordResets, dailySummary, notifications };
 }
 
 /** Fast, NOT secure — only so tests don't spend time on argon2. Auth tests use the real one. */

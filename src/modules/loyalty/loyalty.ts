@@ -8,6 +8,7 @@ import { newId } from '../../shared/ids.js';
 import { parseReceiptCode, verifyReceiptSignature } from '../../shared/receipts.js';
 import type { OwnerContext } from '../auth/auth.service.js';
 import type { CustomerContext } from '../customers/customers.js';
+import type { NotificationsService } from '../notifications/notifications.js';
 
 // ── Schema ──────────────────────────────────────────────────────
 
@@ -254,6 +255,7 @@ export class LoyaltyService {
   constructor(
     private readonly repo: LoyaltyRepo,
     private readonly now: () => Date = () => new Date(),
+    private readonly notify?: NotificationsService,
   ) {}
 
   // Public: the café directory
@@ -319,12 +321,34 @@ export class LoyaltyService {
     });
     if (!ok) throw LoyaltyErrors.receiptClaimed();
     const cafe = await this.repo.cafe(device.branchId);
+    const balance = await this.repo.balance(ctx.customerId, device.branchId);
+
+    // 🔔 The points, and any reward this ticket just put within reach.
+    const link = `/app/cafes/${device.branchId}`;
+    await this.notify?.customer(ctx.customerId, {
+      kind: 'points',
+      branchId: device.branchId,
+      title: `+${points} points chez ${cafe?.name ?? 'votre café'}`,
+      body: `Ticket ${claim.receiptNumber} · vous avez maintenant ${balance} points.`,
+      link,
+      dedupeKey: `points:${claim.orderId}`,
+    });
+    for (const r of program.rewards.filter((r) => r.points > balance - points && r.points <= balance)) {
+      await this.notify?.customer(ctx.customerId, {
+        kind: 'reward_ready',
+        branchId: device.branchId,
+        title: `Vous pouvez avoir : ${r.name}`,
+        body: `${r.points} points chez ${cafe?.name ?? 'votre café'}. Touchez « Utiliser » à la caisse.`,
+        link,
+        dedupeKey: `reward:${claim.orderId}:${r.id}`,
+      });
+    }
     return {
       cafeId: device.branchId,
       cafeName: cafe?.name ?? '',
       receiptNumber: claim.receiptNumber,
       points,
-      balance: await this.repo.balance(ctx.customerId, device.branchId),
+      balance,
     };
   }
 
